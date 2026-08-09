@@ -444,6 +444,7 @@ A handle is an open save (or extdata) archive. Paths are archive-absolute:
 | --- | --- |
 | `int sav_open(int titleIdx, int kind)` | handle ≥ 0; `-1` unsupported title/kind, `-2` all 8 handles taken, else a negative platform result |
 | `int sav_open_shared(char* extdataIdHex)` | handle ≥ 0 for a console-wide shared extdata archive; `-1` where the platform has none (always on Switch), `-2` no free handle |
+| `int sav_open_extdata(int extdataId)` | handle ≥ 0 for an SD extdata archive addressed by raw id; `-1` no extdata on this platform (always on Switch), `-2` no free handle, else a negative platform result |
 | `int sav_read(int h, char* path, char** out, int* outSize)` | `0` ok; `-3` out of memory, `-4` short read, else a negative platform result |
 | `int sav_write(int h, char* path, char* data, int size)` | `0` ok, else negative |
 | `int sav_delete(int h, char* path)` | `0` ok, else negative |
@@ -484,7 +485,45 @@ the archive magic. The Home Menu shared extdata `"00048000F000000B"` (which hold
 `/gamecoin.dat`) is the practical example — see
 [`3ds/universal/playcoins.c`](3ds/universal/playcoins.c).
 
-### 7.3 SD card
+`sav_open_extdata` is the ordinary per-title extdata of `sav_open(idx, 1)`, reached
+by its raw 32-bit extdata id instead of through the catalog. That is the only way to
+an archive the catalog does not list: one your script just created (Checkpoint
+rescans titles on a refresh, not while a script runs), or one written under an id
+Checkpoint does not derive from the title id — a mod's, say. Same handle and same
+`sav_*` calls; `sav_commit` is a no-op on it.
+
+### 7.3 Extdata that does not exist yet (3DS)
+
+Checkpoint's extdata list holds a title only when an extdata archive for it is
+already on the card, and the archive is made by the *game*, the first time it writes
+extdata. A game that never does has none — so there is nothing to back up, and
+nothing for Restore to write an extdata backup into. These three calls make and
+unmake that archive. Extdata is a 3DS concept: **all three return `-1` on Switch.**
+
+| Signature | Returns |
+| --- | --- |
+| `int extdata_default_id(char* idHex)` | the extdata id Checkpoint looks under for that title; `-1` where the platform has no extdata |
+| `int extdata_create(char* idHex, int extdataId, int maxDirs, int maxFiles)` | `0` ok; `-1` no extdata here, or no such title in the catalog; `-2` an archive already exists under that id; else a negative platform result |
+| `int extdata_delete(int extdataId)` | `0` ok; `-1` no extdata here; `-2` no archive under that id; else a negative platform result |
+
+- **The id decides whether the title shows up.** Checkpoint looks under exactly
+  `extdata_default_id` (usually the title's unique id, with a small table of
+  exceptions); an archive created under any other id is real, and reachable with
+  `sav_open_extdata`, but is never listed.
+- `maxDirs` / `maxFiles` are the archive's capacity and are **fixed at creation** —
+  size it for the backup you mean to restore into it.
+- `extdata_create` never touches an archive that already exists (`-2`), so a mistyped
+  id cannot erase a save. `extdata_delete` is the opposite: it destroys the archive
+  and everything in it, with no undo. Confirm it with the user, and read the root
+  with `sav_open_extdata` + `sav_list` first so you can say what is about to go.
+- The title list is not reloaded while a script runs. After creating an archive, tell
+  the user to refresh (hold **B** on the title list) before looking for the title in
+  the extdata tab.
+
+[`3ds/universal/extdata.c`](3ds/universal/extdata.c) is the whole flow: pick a title
+that has no extdata, create it, inspect any id, delete one.
+
+### 7.4 SD card
 
 | Signature | Returns |
 | --- | --- |
@@ -502,7 +541,7 @@ failed `fopen`, or a `remove` that fails and an `rmdir` that succeeds, is the us
 way to tell. Plain stdio (`fopen`, `fread`, `fwrite`, `remove`, `rename`, `rmdir`)
 works on the same paths for everything else.
 
-### 7.4 Zip
+### 7.5 Zip
 
 | Signature | Returns |
 | --- | --- |
@@ -515,7 +554,7 @@ interoperate. Entries carry `/`-separated relative paths. Both calls stream thro
 files, drive the automatic innermost progress row while they run, and poll the
 abort flag between chunks.
 
-### 7.5 Network
+### 7.6 Network
 
 | Signature | Returns |
 | --- | --- |
@@ -548,7 +587,7 @@ Negative returns, shared by all three transfer calls:
   not need it. Free what you took.
 - `web_upload_file` does not follow redirects (a redirect would re-send the body).
 
-### 7.6 JSON
+### 7.7 JSON
 
 nlohmann's parser behind an opaque handle: `struct JSON*`.
 
@@ -593,7 +632,7 @@ if (json_object_contains(root, "items") && json_array_size(json_object_element(r
 json_delete(root);
 ```
 
-### 7.7 Dialogs
+### 7.8 Dialogs
 
 Every call here except `gui_status` blocks the script until the user answers.
 
@@ -618,7 +657,7 @@ Every call here except `gui_status` blocks the script until the user answers.
 - `gui_status` sets the one-line status shown while the script works — the place
   for "Downloading database…" — and returns immediately.
 
-### 7.8 Progress
+### 7.9 Progress
 
 Non-blocking by construction: these only write state, so a copy loop can report
 every chunk without ever waiting for a frame.
@@ -642,7 +681,7 @@ themselves (bytes moved). `progress_note` is what that row says while no native
 call is running, and setting it also puts the row on screen, so the line is
 labelled from the first stage instead of appearing blank when a zip starts.
 
-### 7.9 Logging and environment
+### 7.10 Logging and environment
 
 | Signature | Returns |
 | --- | --- |
@@ -656,7 +695,7 @@ anything worth keeping in a bug report.
 `app_root()` returns the prefix in the form that platform's `fopen`/`stat` wants,
 which is the whole trick to writing one script for both consoles.
 
-### 7.10 Sealed storage
+### 7.11 Sealed storage
 
 For a credential a script has to keep between runs — an OAuth refresh token, an
 API key — instead of leaving it in a JSON file on the card.
@@ -1019,6 +1058,7 @@ gate before the console.
 | [`3ds/universal/sharkive.c`](3ds/universal/sharkive.c) | 3DS | Cheat manager: downloads [Sharkive](https://github.com/FlagBrew/Sharkive)'s `3ds.json`, ticks cheats per title, writes `/cheats/<TITLEID>.txt` for the Luma3DS patcher. |
 | [`switch/universal/sharkive.c`](switch/universal/sharkive.c) | Switch | Same, for Atmosphere: resolves the build id and writes `/atmosphere/contents/<TITLEID>/cheats/<BUILDID>.txt`. |
 | [`3ds/universal/playcoins.c`](3ds/universal/playcoins.c) | 3DS | Sets Play Coins by editing `/gamecoin.dat` in the Home Menu shared extdata. The shortest real example of `sav_open_shared`. |
+| [`3ds/universal/extdata.c`](3ds/universal/extdata.c) | 3DS | Creates the extdata archive a title has never had, so it appears in the extdata tab and an extdata backup has somewhere to restore into. Also inspects and deletes an archive by raw id. |
 | [`examples/example.c`](examples/example.c) | **not bundled** | The annotated API tour: one menu entry per API area. Copy it to `<app root>/scripts/universal/` by hand and run it while reading it. |
 
 `sharkive.c` is genuinely per-target (Luma3DS cheat txt vs Atmosphere build-id

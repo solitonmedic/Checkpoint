@@ -306,6 +306,15 @@ void ckpt_sav_open_shared(struct ParseState* Parser, struct Value* ReturnValue, 
     ReturnValue->Val->Integer = host().savOpenShared(id);
 }
 
+void ckpt_sav_open_extdata(struct ParseState* Parser, struct Value* ReturnValue, struct Value** Param, int NumArgs)
+{
+    // Unlike sav_open_shared's, this id is a plain 32-bit extdata id, so it
+    // fits an int and crosses as one.
+    const ScriptArgs args(Parser, Param, NumArgs, "sav_open_extdata");
+    const int extdataId       = args.numInRange(0, 0, 0x7FFFFFFF);
+    ReturnValue->Val->Integer = host().savOpenExtdata((uint32_t)extdataId);
+}
+
 void ckpt_sav_read(struct ParseState* Parser, struct Value* ReturnValue, struct Value** Param, int NumArgs)
 {
     const ScriptArgs args(Parser, Param, NumArgs, "sav_read");
@@ -407,6 +416,36 @@ void ckpt_sav_close(struct ParseState* Parser, struct Value* ReturnValue, struct
 void ckpt_sav_close_all(void)
 {
     host().savCloseAll();
+}
+
+/* ---- extdata archives that do not exist yet ---------------------------- */
+
+void ckpt_extdata_default_id(struct ParseState* Parser, struct Value* ReturnValue, struct Value** Param, int NumArgs)
+{
+    // Keyed by title id, not by catalog index: the whole point is a title the
+    // Extdata list does not hold.
+    const uint64_t id         = strtoull(ScriptArgs(Parser, Param, NumArgs, "extdata_default_id").str(0), nullptr, 16);
+    ReturnValue->Val->Integer = host().extdataDefaultId(id);
+}
+
+void ckpt_extdata_create(struct ParseState* Parser, struct Value* ReturnValue, struct Value** Param, int NumArgs)
+{
+    const ScriptArgs args(Parser, Param, NumArgs, "extdata_create");
+    const uint64_t id   = strtoull(args.str(0), nullptr, 16);
+    const int extdataId = args.numInRange(1, 0, 0x7FFFFFFF);
+    // Fixed for the life of the archive, so 0 would be an archive nothing can
+    // ever be written to.
+    const int maxDirs         = args.numInRange(2, 1, 10000);
+    const int maxFiles        = args.numInRange(3, 1, 10000);
+    ReturnValue->Val->Integer = host().extdataCreate(id, (uint32_t)extdataId, maxDirs, maxFiles);
+}
+
+void ckpt_extdata_delete(struct ParseState* Parser, struct Value* ReturnValue, struct Value** Param, int NumArgs)
+{
+    const ScriptArgs args(Parser, Param, NumArgs, "extdata_delete");
+    const int extdataId = args.numInRange(0, 0, 0x7FFFFFFF);
+    Logging::info("[script] extdata_delete on extdata id 0x{:08X}", (unsigned)extdataId);
+    ReturnValue->Val->Integer = host().extdataDelete((uint32_t)extdataId);
 }
 
 /* ---- network ----------------------------------------------------------- */

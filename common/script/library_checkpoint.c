@@ -69,6 +69,13 @@ struct LibraryFunction CheckpointFunctions[] =
     // magic. Returns a handle usable with the sav_* calls below (-2 = no free
     // handle, negative Result = open failed). commit is a no-op on it.
     { ckpt_sav_open_shared,    "int sav_open_shared(char* extdataIdHex);" },
+    // An ordinary SD extdata archive keyed by its raw extdata id instead of by
+    // catalog index, which is the only way to one the catalog does not list —
+    // an archive this script just created, or one written under an id the app
+    // does not derive from the title id. Same handle and same sav_* calls as
+    // the two opens above; commit is a no-op on it. -1 = no extdata on this
+    // platform, -2 = no free handle, negative Result = open failed.
+    { ckpt_sav_open_extdata,   "int sav_open_extdata(int extdataId);" },
     { ckpt_sav_read,           "int sav_read(int h, char* path, char** out, int* outSize);" },
     { ckpt_sav_write,          "int sav_write(int h, char* path, char* data, int size);" },
     { ckpt_sav_delete,         "int sav_delete(int h, char* path);" },
@@ -87,6 +94,22 @@ struct LibraryFunction CheckpointFunctions[] =
     { ckpt_sav_list,           "struct directory* sav_list(int h, char* path);" },
     { ckpt_sav_commit,         "int sav_commit(int h);" },
     { ckpt_sav_close,          "void sav_close(int h);" },
+    // Making an extdata archive that is not there yet, so a title whose game
+    // never wrote extdata has one to be listed under and to restore into. 3DS
+    // only: all three return -1 on Switch.
+    //
+    // extdata_default_id is the id the app looks under for that title — create
+    // under any other and the title stays unlisted, reachable only through
+    // sav_open_extdata. extdata_create returns 0, -1 (no extdata here / no such
+    // title in the catalog), -2 (an archive already exists under that id, and
+    // is never recreated, so a mistyped id cannot erase a save), or a Result;
+    // maxDirs / maxFiles fix the archive's capacity for good at creation.
+    // extdata_delete destroys the archive and everything in it with no undo —
+    // confirm it with the user first — and returns 0, -1, -2 (no such archive)
+    // or a Result.
+    { ckpt_extdata_default_id, "int extdata_default_id(char* idHex);" },
+    { ckpt_extdata_create,     "int extdata_create(char* idHex, int extdataId, int maxDirs, int maxFiles);" },
+    { ckpt_extdata_delete,     "int extdata_delete(int extdataId);" },
     // network. web_get returns the HTTP status code, or a negative value on
     // failure (-1 = curl unavailable, -2 = the response did not fit in memory,
     // -(CURLcode+100) = transfer error); the out buffer is malloc'd and

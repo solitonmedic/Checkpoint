@@ -40,7 +40,9 @@
 #include "loader.hpp"
 #include "logging.hpp"
 #include "scriptheap.hpp"
+#include "smdh.hpp"
 #include "title.hpp"
+#include "titlequirks.hpp"
 #include <3ds.h>
 #include <cstring>
 #include <mbedtls/sha256.h>
@@ -80,6 +82,26 @@ namespace {
         }
         FSDIR_Close(dir);
         return true;
+    }
+
+    // Opening it is the only thing that answers for an archive the catalog does
+    // not list.
+    bool extdataExists(u32 extdataId)
+    {
+        FS_Archive archive;
+        if (R_FAILED(Archive::extdata(&archive, extdataId))) {
+            return false;
+        }
+        FSUSER_CloseArchive(archive);
+        return true;
+    }
+
+    FS_ExtSaveDataInfo sdExtdataInfo(u32 extdataId)
+    {
+        FS_ExtSaveDataInfo info = {};
+        info.mediaType          = MEDIATYPE_SD;
+        info.saveId             = extdataId;
+        return info;
     }
 
     class CtrScriptHost : public ScriptHost {
@@ -186,6 +208,27 @@ namespace {
             // Shared extdata is a file-level archive like ordinary extdata: it needs
             // no commit and no secure-value fix, so savCommit is a no-op on this
             // handle.
+            mSlots[slot].arch       = ArchiveHandle::fromFs(archive);
+            mSlots[slot].commitable = false;
+            mSlots[slot].uniqueId   = 0;
+            return slot;
+        }
+
+        int savOpenExtdata(u32 extdataId) override
+        {
+            const int slot = freeSlot();
+            if (slot < 0) {
+                return -2;
+            }
+
+            FS_Archive archive;
+            const Result res = Archive::extdata(&archive, extdataId);
+            if (R_FAILED(res)) {
+                return (int)res;
+            }
+
+            // Ordinary extdata, just reached by id instead of through a Title:
+            // no commit and no secure value, like savOpen's kind == 1 path.
             mSlots[slot].arch       = ArchiveHandle::fromFs(archive);
             mSlots[slot].commitable = false;
             mSlots[slot].uniqueId   = 0;
@@ -324,6 +367,66 @@ namespace {
             for (int i = 0; i < MAX_SAV_HANDLES; i++) {
                 mSlots[i] = SavSlot{};
             }
+        }
+
+        int extdataDefaultId(uint64_t titleId) override
+        {
+            // The derivation TitleProbe uses, so an archive created under this
+            // id is one the next refresh finds.
+            return (int)TitleQuirks::extdataIdFor((u64)titleId);
+        }
+
+        int extdataCreate(uint64_t titleId, u32 extdataId, int maxDirs, int maxFiles) override
+        {
+            // Never over an existing archive: FS would take the create as a
+            // wipe-and-remake, so a mistyped id would erase a save.
+            if (extdataExists(extdataId)) {
+                return -2;
+            }
+
+            Title title;
+            const int idx = titleIndexOf(titleId);
+            if (idx < 0 || !catalogTitle(idx, title)) {
+                return -1;
+            }
+
+            // The archive keeps the title's SMDH as its icon, which is what the
+            // console's data-management screen shows for it. A title whose SMDH
+            // will not load still gets its archive: FS reads a zero-length icon
+            // as "none".
+            smdh_s* smdh = loadSMDH((u32)titleId, (u32)(titleId >> 32), (u8)title.mediaType());
+            if (smdh == NULL) {
+                Logging::warning("[script] extdata_create: no SMDH for title {:016X}, creating without an icon", (u64)titleId);
+            }
+
+            const Result res = FSUSER_CreateExtSaveData(
+                sdExtdataInfo(extdataId), (u32)maxDirs, (u32)maxFiles, 0xFFFFFFFFFFFFFFFFULL, smdh ? sizeof(smdh_s) : 0, (u8*)smdh);
+            delete smdh;
+
+            if (R_FAILED(res)) {
+                Logging::error("[script] extdata_create: title {:016X} id 0x{:08X} failed with result 0x{:08X}.", (u64)titleId, extdataId, res);
+                return (int)res;
+            }
+            Logging::info(
+                "[script] extdata_create: title {:016X} now has extdata 0x{:08X} ({} dirs, {} files).", (u64)titleId, extdataId, maxDirs, maxFiles);
+            return 0;
+        }
+
+        int extdataDelete(u32 extdataId) override
+        {
+            // Asked first so a missing archive reads as -2 rather than as
+            // whichever Result FS picks for one.
+            if (!extdataExists(extdataId)) {
+                return -2;
+            }
+
+            const Result res = FSUSER_DeleteExtSaveData(sdExtdataInfo(extdataId));
+            if (R_FAILED(res)) {
+                Logging::error("[script] extdata_delete: id 0x{:08X} failed with result 0x{:08X}.", extdataId, res);
+                return (int)res;
+            }
+            Logging::info("[script] extdata_delete: id 0x{:08X} destroyed.", extdataId);
+            return 0;
         }
 
         // The NAND CID: 16 bytes burnt into this console's internal storage,

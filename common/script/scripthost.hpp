@@ -118,6 +118,11 @@ public:
     // platform has no such archive.
     virtual int savOpenShared(uint64_t id) = 0;
 
+    // An SD extdata archive keyed by its raw extdata id rather than by catalog
+    // index, which is the only way to one the catalog does not list. -1 where
+    // the platform has no extdata.
+    virtual int savOpenExtdata(uint32_t extdataId) = 0;
+
     virtual bool savValid(int handle) = 0;
 
     // Reads the whole file into a ScriptHeap block, NUL-terminated one byte
@@ -158,6 +163,32 @@ public:
     // Called after every run whatever the exit path, so a script that forgot
     // sav_close never leaks an open archive into the next one.
     virtual void savCloseAll(void) = 0;
+
+    /* ---- extdata archives that do not exist yet -------------------------- */
+
+    // Every call above needs an archive to already be there; these make and
+    // unmake one. Only the 3DS has extdata, so on Switch all three answer -1
+    // and do nothing.
+
+    // The extdata id the app looks under when deciding whether a title has
+    // extdata: an archive created under any other id is never listed. -1 where
+    // the platform has no extdata.
+    virtual int extdataDefaultId(uint64_t titleId) = 0;
+
+    // Create an empty extdata archive under `extdataId`, carrying `titleId`'s
+    // icon. maxDirs / maxFiles are its capacity, fixed at creation.
+    //
+    // 0 on success. -1 the platform has no extdata, or the catalog does not
+    // hold that title (its icon is what the archive is created with); -2 an
+    // archive already exists under that id — an existing one is never
+    // recreated, since that is how a save gets erased by a typo; otherwise a
+    // platform Result.
+    virtual int extdataCreate(uint64_t titleId, uint32_t extdataId, int maxDirs, int maxFiles) = 0;
+
+    // Destroy the archive under `extdataId` and everything in it, with no undo,
+    // so confirming is the caller's job. 0 on success, -1 no extdata on this
+    // platform, -2 no such archive, otherwise a platform Result.
+    virtual int extdataDelete(uint32_t extdataId) = 0;
 
     /* ---- console-bound key material -------------------------------------- */
 

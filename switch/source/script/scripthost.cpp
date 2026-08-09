@@ -163,6 +163,11 @@ namespace {
         // unsupported.
         int savOpenShared(uint64_t) override { return -1; }
 
+        // Extdata as a whole is a 3DS concept: a Switch title has one save
+        // filesystem and nothing beside it. Every extdata call answers -1
+        // rather than being absent, so one script can serve both consoles.
+        int savOpenExtdata(uint32_t) override { return -1; }
+
         bool savValid(int handle) override { return handle >= 0 && handle < MAX_SAV_HANDLES && mSlots[handle].live; }
 
         int savRead(int handle, const char* path, char** outBuf, int* outSize) override
@@ -266,6 +271,10 @@ namespace {
                 unmount(mSlots[i]);
             }
         }
+
+        int extdataDefaultId(uint64_t) override { return -1; }
+        int extdataCreate(uint64_t, uint32_t, int, int) override { return -1; }
+        int extdataDelete(uint32_t) override { return -1; }
 
         int deviceSecret(uint8_t* out, int want) override
         {

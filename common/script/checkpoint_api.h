@@ -62,6 +62,7 @@ CKPT_BINDING(ckpt_sd_exists);
 /* save archives (kind: 0=save, 1=extdata; fixed table of 8 handles) */
 CKPT_BINDING(ckpt_sav_open);
 CKPT_BINDING(ckpt_sav_open_shared);
+CKPT_BINDING(ckpt_sav_open_extdata);
 CKPT_BINDING(ckpt_sav_read);
 CKPT_BINDING(ckpt_sav_write);
 CKPT_BINDING(ckpt_sav_delete);
@@ -71,6 +72,11 @@ CKPT_BINDING(ckpt_sav_rename);
 CKPT_BINDING(ckpt_sav_list);
 CKPT_BINDING(ckpt_sav_commit);
 CKPT_BINDING(ckpt_sav_close);
+
+/* extdata archives that do not exist yet (3DS only) */
+CKPT_BINDING(ckpt_extdata_default_id);
+CKPT_BINDING(ckpt_extdata_create);
+CKPT_BINDING(ckpt_extdata_delete);
 
 /* network */
 CKPT_BINDING(ckpt_net_ip);
