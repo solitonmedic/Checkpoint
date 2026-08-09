@@ -65,6 +65,12 @@ namespace {
             return;
         }
         for (size_t i = 0, sz = items.size(); i < sz; i++) {
+            // Desktop-OS leftovers are not save data and are never copied, so they
+            // must not be counted either: scanTree's totals are what the restore
+            // checks the copy against.
+            if (HostFiles::isMetadata(items.entry(i))) {
+                continue;
+            }
             const std::string child = path + items.entry(i);
             if (items.folder(i)) {
                 stats.dirs++;
@@ -388,6 +394,15 @@ Result io::copyDirectory(const std::string& srcPath, const std::string& dstPath,
     for (size_t i = 0, sz = items.size(); i < sz && R_SUCCEEDED(res); i++) {
         if (sink.cancelled()) {
             break;
+        }
+
+        // A backup folder that has been through a desktop OS carries files the
+        // console never wrote — macOS AppleDouble sidecars above all. Pushing those
+        // into a save archive is at best wasted space, so they stay out of the copy
+        // (and out of scanTree's totals, which this is checked against).
+        if (HostFiles::isMetadata(items.entry(i))) {
+            Logging::info("Ignoring host metadata entry in backup: {}.", srcPath + items.entry(i));
+            continue;
         }
 
         std::string newsrc = srcPath + items.entry(i);

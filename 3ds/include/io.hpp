@@ -43,7 +43,20 @@ class BackupTarget;
 namespace io {
     // The stage at which a backup/restore failed. The UI maps it (together with
     // the target's data-type name) to a human message; io itself carries no UI text.
-    enum class BackupStage { OpenArchive, DeleteDst, CreateDst, Copy, ReadSpi, ReadFile, WriteFile, Commit, SecureValue, PathTooLong, CardNandSave };
+    enum class BackupStage {
+        OpenArchive,
+        DeleteDst,
+        CreateDst,
+        Copy,
+        ReadSpi,
+        ReadFile,
+        WriteFile,
+        Commit,
+        SecureValue,
+        PathTooLong,
+        CardNandSave,
+        EmptyBackup
+    };
 
     struct IoOutcome {
         bool ok;
@@ -77,6 +90,12 @@ namespace io {
     // roots themselves and every entry under them. Names the offending path in the
     // log and returns the same Result FS would have.
     Result checkPathLengths(const std::vector<TreeEntry>& entries, const std::u16string& srcRoot, const std::u16string& dstRoot);
+    // Removes from a copy plan built off the SD card every entry that is desktop-OS
+    // metadata rather than save data (see HostFiles::isMetadata) — a whole subtree
+    // when the metadata is a directory. Returns how many entries went, and names
+    // each one in the log. Only a restore filters: a backup copies the console-side
+    // archive verbatim, and nothing there is host metadata to begin with.
+    size_t dropHostMetadata(std::vector<TreeEntry>& entries);
     // Copy a tree previously enumerated by collectTree, reusing one heap buffer for
     // every file. Stops on the first failure.
     Result copyTree(FS_Archive srcArch, FS_Archive dstArch, const std::u16string& srcRoot, const std::u16string& dstRoot,

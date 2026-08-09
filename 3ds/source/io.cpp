@@ -61,6 +61,11 @@ static std::u16string rawBackupFile(const std::u16string& folder)
         if (dir.folder(i)) {
             continue;
         }
+        // An AppleDouble sidecar next to the save would otherwise read as a second
+        // candidate and send this back to the canonical name for no reason.
+        if (HostFiles::isMetadata(StringUtils::UTF16toUTF8(dir.entry(i)))) {
+            continue;
+        }
         if (!only.empty()) {
             // More than one candidate: stay with the canonical name so the
             // failure names the file Checkpoint expects.
@@ -142,6 +147,40 @@ Result io::checkPathLengths(const std::vector<TreeEntry>& entries, const std::u1
     }
 
     return 0;
+}
+
+size_t io::dropHostMetadata(std::vector<TreeEntry>& entries)
+{
+    // A metadata *directory* has to take its whole subtree with it. collectTree emits
+    // a folder before its contents and every child's rel keeps the parent's prefix,
+    // so testing each component of rel covers the file and the subtree case in one
+    // pass — no need to remember which parents were dropped.
+    const auto isMetadata = [](const std::u16string& rel) {
+        const std::string path = StringUtils::UTF16toUTF8(rel);
+        for (size_t start = 0;;) {
+            const size_t slash = path.find('/', start);
+            const size_t end   = (slash == std::string::npos) ? path.size() : slash;
+            if (HostFiles::isMetadata(path.substr(start, end - start))) {
+                return true;
+            }
+            if (slash == std::string::npos) {
+                return false;
+            }
+            start = slash + 1;
+        }
+    };
+
+    const size_t before = entries.size();
+    entries.erase(std::remove_if(entries.begin(), entries.end(),
+                      [&isMetadata](const TreeEntry& entry) {
+                          if (!isMetadata(entry.rel)) {
+                              return false;
+                          }
+                          Logging::info("Ignoring host metadata entry in backup: {}.", StringUtils::UTF16toUTF8(entry.rel));
+                          return true;
+                      }),
+        entries.end());
+    return before - entries.size();
 }
 
 Result io::copyFile(
@@ -550,6 +589,16 @@ io::IoOutcome io::restore(const BackupTarget& target, const std::u16string& srcP
                 return {false, res, (u32)res == RES_PATH_TOO_LONG ? BackupStage::PathTooLong : BackupStage::Copy};
             }
 
+            // A backup folder that has been through a desktop OS carries files the
+            // console never wrote — most often macOS AppleDouble sidecars, which the
+            // save archive refuses outright and which used to fail the restore with
+            // the console-side save already wiped (#577). They are not save data:
+            // drop them from the plan before anything is counted or copied.
+            const size_t dropped = io::dropHostMetadata(entries);
+            if (dropped > 0) {
+                Logging::info("Skipped {} host metadata entries in the backup; they are not part of the save.", dropped);
+            }
+
             res = io::checkPathLengths(entries, fullSrc, dstPath);
             if (R_FAILED(res)) {
                 Logging::error("Refusing to restore {}: the backup holds a path FS cannot open.", target.dataTypeName());
@@ -561,6 +610,13 @@ io::IoOutcome io::restore(const BackupTarget& target, const std::u16string& srcP
                 if (!e.folder) {
                     fileCount++;
                 }
+            }
+
+            // Nothing to put back: restoring would only wipe what is on the console.
+            // Reachable now that metadata-only folders filter down to an empty plan.
+            if (fileCount == 0) {
+                Logging::error("Refusing to restore {}: the backup holds no files.", target.dataTypeName());
+                return {false, 0, BackupStage::EmptyBackup};
             }
 
             if (isTwl) {

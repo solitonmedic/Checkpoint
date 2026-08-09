@@ -109,6 +109,38 @@ void StringUtils::trim(std::string& s)
     rtrim(s);
 }
 
+bool HostFiles::isMetadata(const std::string& name)
+{
+    // AppleDouble: the sidecar is always "._" followed by the name of the file it
+    // shadows, so the prefix alone identifies it. No console-authored save file
+    // starts that way.
+    if (name.rfind("._", 0) == 0) {
+        return true;
+    }
+
+    // Fixed names desktop file managers and indexers leave behind. Case-insensitive:
+    // the SD card is FAT/exFAT, so the same file can come back as ".ds_store".
+    static const char* const known[] = {
+        ".DS_Store",
+        ".Spotlight-V100",
+        ".fseventsd",
+        ".TemporaryItems",
+        ".Trashes",
+        ".apdisk",
+        "Thumbs.db",
+        "desktop.ini",
+        "System Volume Information",
+        "$RECYCLE.BIN",
+    };
+    for (const char* entry : known) {
+        if (strcasecmp(name.c_str(), entry) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 char* getConsoleIP(void)
 {
     struct in_addr in;

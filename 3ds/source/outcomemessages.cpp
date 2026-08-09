@@ -85,6 +85,8 @@ std::string OutcomeMessages::restoreError(io::BackupStage stage, const std::stri
             return i18n::t("outcome.path_too_long");
         case io::BackupStage::CardNandSave:
             return i18n::t("outcome.card_nand_save");
+        case io::BackupStage::EmptyBackup:
+            return i18n::t("main.backup_empty");
         default:
             return i18n::t("outcome.restore_failed", {dataType});
     }
