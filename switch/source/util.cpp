@@ -34,6 +34,26 @@
 #include "sleepguard.hpp"
 #include "titlecatalog.hpp"
 
+namespace {
+    // FTP uses a command socket plus a short-lived data socket per concurrent
+    // transfer. The libnx defaults are sized for general client networking and
+    // can exhaust bsd:u's socket-buffer pool during a directory upload, leaving
+    // PASV listeners unable to accept and eventually timing out. Match the
+    // standalone Switch ftpd configuration, with one extra BSD service session
+    // for Checkpoint's HTTP/log and script traffic.
+    constexpr SocketInitConfig SOCKET_INIT_CONFIG = {
+        .tcp_tx_buf_size     = 1 * 1024 * 1024,
+        .tcp_rx_buf_size     = 1 * 1024 * 1024,
+        .tcp_tx_buf_max_size = 4 * 1024 * 1024,
+        .tcp_rx_buf_max_size = 4 * 1024 * 1024,
+        .udp_tx_buf_size     = 0x2400,
+        .udp_rx_buf_size     = 0xA500,
+        .sb_efficiency       = 8,
+        .num_bsd_sessions    = 3,
+        .bsd_service_type    = BsdServiceType_User,
+    };
+}
+
 void servicesExit(void)
 {
     // Nothing is left running that needs the console awake; also covers a
@@ -88,7 +108,7 @@ Result servicesInit(void)
     }
 
     Result socinit = 0;
-    if ((socinit = socketInitializeDefault()) == 0) {
+    if ((socinit = socketInitialize(&SOCKET_INIT_CONFIG)) == 0) {
         // nxlinkStdio();
     }
     else {
