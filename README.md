@@ -145,6 +145,7 @@ This project is licensed under the GNU GPLv3. Additional Terms 7.b and 7.c of GP
 * [TuxSH](https://github.com/tuxsh) for [TWLSaveTool](https://github.com/TuxSH/TWLSaveTool), from which SPI code has been taken.
 * [LiquidFenrir](https://github.com/LiquidFenrir) for the GBA Virtual Console save support.
 * [SNBeast](https://github.com/SNBeast) for the DSiWare save support proof of concept.
+* [mtheall](https://github.com/mtheall) for [ftpd](https://github.com/mtheall/ftpd)'s code used as reference for our FTP implementation.
 * [edu1010](https://github.com/edu1010) for the wireless save transfer feature.
 * [piepie62](https://github.com/piepie62) and all other [PKSM](https://github.com/FlagBrew/PKSM) contributors for some code that has been ported to Checkpoint.
 * [zsaleeba](https://github.com/zsaleeba) for being the original contributor to [picoc](https://github.com/FlagBrew/picoc), the C interpreter Checkpoint's scripting engine is built on, and all the contributors to FlagBrew's flavor of picoc, which is the fork this project relies on.
