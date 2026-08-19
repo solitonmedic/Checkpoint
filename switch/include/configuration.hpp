@@ -55,6 +55,10 @@ public:
     bool filter(u64 id);
     bool favorite(u64 id);
     bool isFTPEnabled(void);
+    // Master switch for the USB MTP responder (browse the SD card from a PC over
+    // the charging cable). Default false; while off the worker never claims
+    // usb:ds, so it can't collide with anything else that wants it.
+    bool isMTPEnabled(void);
     // Master switch for the wireless save-transfer feature (Send/Receive over the
     // network). Default false; keeps the /transfer HTTP handlers unregistered for
     // users who never use it. Parity with the 3DS transfer toggle.
@@ -91,6 +95,7 @@ public:
     void setFilter(u64 id, bool hidden);
     void setFavorite(u64 id, bool favorite);
     void setFTPEnabled(bool enabled);
+    void setMTPEnabled(bool enabled);
     void setTransferEnabled(bool enabled);
     void setConfirmRestoreEnabled(bool enabled);
     void setQuickBackupEnabled(bool enabled);
@@ -143,6 +148,7 @@ private:
 
     nlohmann::json mJson;
     bool FTPEnabled;
+    bool mMTPEnabled;
     bool mTransferEnabled;
     bool mConfirmRestore;
     bool mQuickBackup;

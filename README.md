@@ -38,6 +38,7 @@ On Switch, Checkpoint also provides:
 
 * A rendering backend built on **deko3d**, which makes the application ~70% smaller than before
 * **1080p docked mode** support, alongside 720p in handheld
+* A **USB MTP server**, which makes the console show up as a portable device on your PC so you can drag backups off over the charging cable, with no network involved
 * File-by-file verification after restore, and safer handling of large save restores
 
 ## Scripting

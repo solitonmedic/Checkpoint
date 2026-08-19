@@ -67,6 +67,10 @@ Configuration::Configuration(void)
             mJson["ftp-enabled"] = false;
             updateJson           = true;
         }
+        if (!(mJson.contains("mtp-enabled") && mJson["mtp-enabled"].is_boolean())) {
+            mJson["mtp-enabled"] = false;
+            updateJson           = true;
+        }
         if (!(mJson.contains("transfer-enabled") && mJson["transfer-enabled"].is_boolean())) {
             mJson["transfer-enabled"] = false;
             updateJson                = true;
@@ -266,6 +270,8 @@ void Configuration::parse(void)
 
     // parse FTP flag
     FTPEnabled = mJson["ftp-enabled"];
+    // parse MTP flag
+    mMTPEnabled = mJson.value("mtp-enabled", false);
     // parse wireless-transfer flag
     mTransferEnabled = mJson.value("transfer-enabled", false);
     // parse confirm-restore flag
@@ -351,6 +357,18 @@ void Configuration::setFTPEnabled(bool enabled)
 {
     FTPEnabled           = enabled;
     mJson["ftp-enabled"] = enabled;
+    save();
+}
+
+bool Configuration::isMTPEnabled(void)
+{
+    return mMTPEnabled;
+}
+
+void Configuration::setMTPEnabled(bool enabled)
+{
+    mMTPEnabled          = enabled;
+    mJson["mtp-enabled"] = enabled;
     save();
 }
 

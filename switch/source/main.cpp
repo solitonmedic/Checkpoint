@@ -31,6 +31,7 @@
 #include "colors.hpp"
 #include "ftpserver.hpp"
 #include "logging.hpp"
+#include "mtpserver.hpp"
 #include "scriptlogview.hpp"
 #include "scriptrunner.hpp"
 #include "thread.hpp"
@@ -184,6 +185,9 @@ int main(void)
 
     Logging::trace("[shutdown] stopping the FTP server...");
     FTPServer::exit();
+
+    Logging::trace("[shutdown] stopping the MTP server...");
+    MTPServer::exit();
 
     Logging::trace("[shutdown] releasing screen and services...");
     g_screen.reset();

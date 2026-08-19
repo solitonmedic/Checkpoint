@@ -12,6 +12,7 @@
 
   },
   "ftp-enabled": false,
+  "mtp-enabled": false,
   "confirm-restore": true,
   "quick-backup": false,
   "verify-restore": false,
