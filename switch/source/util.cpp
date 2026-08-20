@@ -30,6 +30,7 @@
 #include "i18n.hpp"
 #include "logging.hpp"
 #include "main.hpp"
+#include "mtpserver.hpp"
 #include "server.hpp"
 #include "sleepguard.hpp"
 #include "titlecatalog.hpp"
@@ -65,6 +66,7 @@ void servicesExit(void)
     // FTPServer::exit() is normally already done at the end of main(); this
     // covers the early-exit paths that call servicesExit() without reaching it.
     FTPServer::exit();
+    MTPServer::exit();
     Server::exit();
     Logging::exit();
     if (g_notificationLedAvailable)
@@ -163,6 +165,10 @@ Result servicesInit(void)
     if (R_SUCCEEDED(socinit)) {
         FTPServer::init();
     }
+
+    // MTP rides the USB cable, so unlike FTP it doesn't care whether the socket
+    // layer came up. The worker idles until the toggle is switched on.
+    MTPServer::init();
 
     if (R_SUCCEEDED(res = pdmqryInitialize())) {}
     else {

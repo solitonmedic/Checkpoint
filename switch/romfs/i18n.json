@@ -407,6 +407,66 @@
     "zh": "从电脑浏览TF卡根目录",
     "ru": "Просмотреть бэкапы через компьютер"
   },
+  "settings.conn.mtp": {
+    "en": "USB (MTP)",
+    "it": "USB (MTP)",
+    "es": "USB (MTP)",
+    "fr": "USB (MTP)",
+    "de": "USB (MTP)",
+    "pt": "USB (MTP)",
+    "nl": "USB (MTP)",
+    "ja": "USB (MTP)",
+    "zh": "USB (MTP)",
+    "ru": "USB (MTP)"
+  },
+  "settings.conn.mtp.sub": {
+    "en": "Browse the SD card over the USB cable",
+    "it": "Sfoglia la scheda SD tramite il cavo USB",
+    "es": "Explorar la tarjeta SD por el cable USB",
+    "fr": "Parcourir la carte SD via le câble USB",
+    "de": "SD-Karte über das USB-Kabel durchsuchen",
+    "pt": "Navegue pelo cartão SD pelo cabo USB",
+    "nl": "Blader door de SD-kaart via de USB-kabel",
+    "ja": "USBケーブルでSDカードを閲覧",
+    "zh": "通过 USB 线浏览 TF 卡",
+    "ru": "Просмотр SD-карты через USB-кабель"
+  },
+  "settings.conn.mtp.waiting": {
+    "en": "· waiting for a PC",
+    "it": "· in attesa di un PC",
+    "es": "· esperando un PC",
+    "fr": "· en attente d'un PC",
+    "de": "· wartet auf einen PC",
+    "pt": "· aguardando um PC",
+    "nl": "· wacht op een pc",
+    "ja": "· パソコンを待機中",
+    "zh": "· 等待电脑连接",
+    "ru": "· ожидание ПК"
+  },
+  "settings.conn.mtp.connected": {
+    "en": "· connected",
+    "it": "· connesso",
+    "es": "· conectado",
+    "fr": "· connecté",
+    "de": "· verbunden",
+    "pt": "· conectado",
+    "nl": "· verbonden",
+    "ja": "· 接続済み",
+    "zh": "· 已连接",
+    "ru": "· подключено"
+  },
+  "settings.conn.mtp.unavailable": {
+    "en": "· USB unavailable",
+    "it": "· USB non disponibile",
+    "es": "· USB no disponible",
+    "fr": "· USB indisponible",
+    "de": "· USB nicht verfügbar",
+    "pt": "· USB indisponível",
+    "nl": "· usb niet beschikbaar",
+    "ja": "· USBを使用できません",
+    "zh": "· USB 不可用",
+    "ru": "· USB недоступен"
+  },
   "settings.conn.receive_pin": {
     "en": "Receive PIN",
     "it": "PIN di ricezione",

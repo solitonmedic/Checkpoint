@@ -34,6 +34,7 @@
 #include "i18n.hpp"
 #include "logging.hpp"
 #include "main.hpp"
+#include "mtpserver.hpp"
 #include "server.hpp"
 #include "shapes.hpp"
 #include "sortmode.hpp"
@@ -319,6 +320,29 @@ void SettingsScreen::rebuildRows(void)
                 return ip.empty() ? i18n::t("settings.conn.running") : i18n::t("settings.conn.running_on", {ip});
             };
             mRows.push_back(std::move(ftp));
+
+            // USB counterpart to the FTP row: the console appears as a portable
+            // device on a PC. The status suffix distinguishes "the interface is
+            // up, plug a cable in" from "a host is actually talking to us", and
+            // from usb:ds being unavailable (docked, or another process owns it).
+            Row mtp;
+            mtp.title      = i18n::t("settings.conn.mtp");
+            mtp.subtitle   = i18n::t("settings.conn.mtp.sub");
+            mtp.control    = Control::Toggle;
+            mtp.section    = i18n::t("settings.section.connectivity");
+            mtp.getOn      = [&cfg]() { return cfg.isMTPEnabled(); };
+            mtp.onActivate = [this, &cfg]() {
+                cfg.setMTPEnabled(!cfg.isMTPEnabled());
+                flashSaved();
+            };
+            mtp.statusSuffix = [&cfg]() -> std::string {
+                if (!cfg.isMTPEnabled())
+                    return "";
+                if (!MTPServer::isRunning())
+                    return i18n::t("settings.conn.mtp.unavailable");
+                return MTPServer::isConnected() ? i18n::t("settings.conn.mtp.connected") : i18n::t("settings.conn.mtp.waiting");
+            };
+            mRows.push_back(std::move(mtp));
 
             // Master switch for the wireless save-transfer feature; when off the
             // Send/Receive buttons stay hidden and the /transfer handlers unregistered.

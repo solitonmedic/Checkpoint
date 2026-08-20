@@ -1,0 +1,692 @@
+/*
+ *   This file is part of Checkpoint
+ *   Copyright (C) 2017-2026 Bernardo Giordano, FlagBrew
+ *
+ *   This program is free software: you can redistribute it and/or modify
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation, either version 3 of the License, or
+ *   (at your option) any later version.
+ *
+ *   This program is distributed in the hope that it will be useful,
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *   GNU General Public License for more details.
+ *
+ *   You should have received a copy of the GNU General Public License
+ *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ *   Additional Terms 7.b and 7.c of GPLv3 apply to this file:
+ *       * Requiring preservation of specified reasonable legal notices or
+ *         author attributions in that material or in the Appropriate Legal
+ *         Notices displayed by works containing it.
+ *       * Prohibiting misrepresentation of the origin of that material,
+ *         or requiring that modified versions of such material be marked in
+ *         reasonable ways as different from the original version.
+ */
+
+#include "mtpusb.hpp"
+#include "logging.hpp"
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <malloc.h>
+
+namespace {
+    // usb:ds hands DMA the buffer we post, so the address has to sit on a page
+    // boundary. memalign gives us that; plain new/malloc does not guarantee it.
+    constexpr size_t USB_BUFFER_ALIGNMENT = 0x1000;
+
+    // Paired with libnx's USB_CLASS_IMAGE: the USB Still Image class, PIMA
+    // 15740 subclass, bulk-only protocol. This trio is what makes a host load
+    // its PTP/MTP driver instead of treating us as a vendor-specific device.
+    constexpr u8 USB_SUBCLASS_STILL_IMAGE = 0x01;
+    constexpr u8 USB_PROTOCOL_BULK_ONLY   = 0x01;
+
+    constexpr u16 MAX_PACKET_SIZE_HIGH  = 0x200;
+    constexpr u16 MAX_PACKET_SIZE_SUPER = 0x400;
+    // The interrupt pipe only ever carries PTP event containers, which are at
+    // most a header plus three parameters.
+    constexpr u16 MAX_PACKET_SIZE_INTERRUPT = 0x18;
+
+    // Nintendo's own vendor id with the USB-comms product id, the pair every
+    // libnx usb:ds device presents. Hosts key their PTP driver off the interface
+    // class, not off this, so it needs no product of its own.
+    constexpr u16 USB_VENDOR_ID  = 0x057E;
+    constexpr u16 USB_PRODUCT_ID = 0x3000;
+
+    // The class control requests every PTP host expects on the interface's
+    // control pipe. Get Device Status in particular is what libmtp reaches for
+    // the moment a bulk transfer looks wrong: answer it and the host resynchro-
+    // nises, leave it unanswered and the host resets the device instead.
+    constexpr u8 PTP_REQUEST_CANCEL             = 0x66;
+    constexpr u8 PTP_REQUEST_GET_EXTENDED_EVENT = 0x67;
+    constexpr u8 PTP_REQUEST_DEVICE_RESET       = 0x68;
+    constexpr u8 PTP_REQUEST_GET_DEVICE_STATUS  = 0x69;
+
+    // Direction bit of bmRequestType: set means the data stage runs device to
+    // host.
+    constexpr u8 USB_SETUP_DIRECTION_IN = 0x80;
+
+    // The Cancel Request payload: the cancellation code and the transaction it
+    // applies to.
+    constexpr u16 PTP_CANCEL_PAYLOAD_SIZE = 6;
+    // A Get Device Status dataset is its own length, then a response code.
+    constexpr u16 PTP_STATUS_DATASET_SIZE = 4;
+    constexpr u16 PTP_RESPONSE_OK         = 0x2001;
+
+    // Control transfers are short and the host is waiting on them, so they get a
+    // far tighter deadline than a bulk data phase.
+    constexpr u64 CONTROL_TIMEOUT_NS = 1'000'000'000ULL;
+    // How often the control thread looks up from its wait to notice a shutdown.
+    constexpr u64 CONTROL_POLL_NS = 100'000'000ULL;
+
+    // Deliberately not the console's real serial number: MTP hands the serial to
+    // every host that enumerates us, and Checkpoint has no reason to publish it.
+    constexpr const char* USB_SERIAL_NUMBER = "Checkpoint";
+
+    // USB 2.0 binary object store advertising the USB 2.0 extension and a
+    // SuperSpeed device capability, so a USB 3 port negotiates SS instead of
+    // falling back. Byte-for-byte the descriptor libnx's own usb_comms publishes.
+    const u8 BINARY_OBJECT_STORE[0x16] = {
+        // BOS descriptor: 5 bytes, type 0x0F, total length 0x16, 2 capabilities.
+        0x05, 0x0F, 0x16, 0x00, 0x02,
+        // USB 2.0 extension: LPM supported.
+        0x07, 0x10, 0x02, 0x02, 0x00, 0x00, 0x00,
+        // SuperSpeed device capability: full/high/super speeds supported.
+        0x0A, 0x10, 0x03, 0x00, 0x0E, 0x00, 0x03, 0x00, 0x00, 0x00};
+}
+
+namespace MTP {
+    UsbInterface::~UsbInterface(void)
+    {
+        finalize();
+    }
+
+    bool UsbInterface::initialize(void)
+    {
+        if (mInitialized) {
+            return true;
+        }
+
+        // The pre-5.0.0 usb:ds interface takes descriptors a different way and
+        // is long obsolete on any console that can run Checkpoint; refuse
+        // loudly rather than silently registering a broken interface.
+        if (hosversionBefore(5, 0, 0)) {
+            Logging::error("MTP needs firmware 5.0.0 or newer for the usb:ds interface.");
+            return false;
+        }
+
+        mReadBuffer  = (u8*)memalign(USB_BUFFER_ALIGNMENT, TRANSFER_BUFFER_SIZE);
+        mWriteBuffer = (u8*)memalign(USB_BUFFER_ALIGNMENT, TRANSFER_BUFFER_SIZE);
+        // Control payloads are a handful of bytes, but usb:ds posts them by DMA
+        // like any other buffer, so this one is page-aligned too.
+        mCtrlBuffer = (u8*)memalign(USB_BUFFER_ALIGNMENT, USB_BUFFER_ALIGNMENT);
+        if (mReadBuffer == nullptr || mWriteBuffer == nullptr || mCtrlBuffer == nullptr) {
+            Logging::error("Failed to allocate the {} byte MTP transfer buffers.", TRANSFER_BUFFER_SIZE);
+            finalize();
+            return false;
+        }
+
+        Result rc = usbDsInitialize();
+        if (R_FAILED(rc)) {
+            // Almost always "someone else owns usb:ds" (a sysmodule, or the
+            // console is in a USB mode of its own). Not fatal: the caller backs
+            // off and tries again.
+            Logging::warning("usbDsInitialize failed with result 0x{:08X}; MTP cannot start.", rc);
+            finalize();
+            return false;
+        }
+        mInitialized = true;
+
+        if (!setupDescriptors()) {
+            finalize();
+            return false;
+        }
+
+        rc = usbDsEnable();
+        if (R_FAILED(rc)) {
+            Logging::error("usbDsEnable failed with result 0x{:08X}.", rc);
+            finalize();
+            return false;
+        }
+
+        startControlThread();
+
+        Logging::info("MTP USB interface enabled.");
+        return true;
+    }
+
+    bool UsbInterface::setupDescriptors(void)
+    {
+        u8 iManufacturer = 0, iProduct = 0, iSerialNumber = 0, iInterface = 0;
+        const u16 languageIds[1] = {0x0409}; // en-US
+
+        Result rc = usbDsAddUsbLanguageStringDescriptor(nullptr, languageIds, 1);
+        if (R_SUCCEEDED(rc)) {
+            rc = usbDsAddUsbStringDescriptor(&iManufacturer, "Nintendo");
+        }
+        if (R_SUCCEEDED(rc)) {
+            rc = usbDsAddUsbStringDescriptor(&iProduct, "Nintendo Switch");
+        }
+        if (R_SUCCEEDED(rc)) {
+            rc = usbDsAddUsbStringDescriptor(&iSerialNumber, USB_SERIAL_NUMBER);
+        }
+        if (R_FAILED(rc)) {
+            Logging::error("Failed to publish the MTP USB string descriptors, result 0x{:08X}.", rc);
+            return false;
+        }
+
+        struct usb_device_descriptor deviceDescriptor = {
+            .bLength            = USB_DT_DEVICE_SIZE,
+            .bDescriptorType    = USB_DT_DEVICE,
+            .bcdUSB             = 0x0200,
+            .bDeviceClass       = 0x00,
+            .bDeviceSubClass    = 0x00,
+            .bDeviceProtocol    = 0x00,
+            .bMaxPacketSize0    = 0x40,
+            .idVendor           = USB_VENDOR_ID,
+            .idProduct          = USB_PRODUCT_ID,
+            .bcdDevice          = 0x0100,
+            .iManufacturer      = iManufacturer,
+            .iProduct           = iProduct,
+            .iSerialNumber      = iSerialNumber,
+            .bNumConfigurations = 0x01,
+        };
+        rc = usbDsSetUsbDeviceDescriptor(UsbDeviceSpeed_High, &deviceDescriptor);
+        if (R_SUCCEEDED(rc)) {
+            // SuperSpeed encodes EP0's packet size as a power of two exponent,
+            // so 0x09 means 512 bytes - not 9.
+            deviceDescriptor.bcdUSB          = 0x0300;
+            deviceDescriptor.bMaxPacketSize0 = 0x09;
+            rc                               = usbDsSetUsbDeviceDescriptor(UsbDeviceSpeed_Super, &deviceDescriptor);
+        }
+        if (R_SUCCEEDED(rc)) {
+            rc = usbDsSetBinaryObjectStore(BINARY_OBJECT_STORE, sizeof(BINARY_OBJECT_STORE));
+        }
+        if (R_FAILED(rc)) {
+            Logging::error("Failed to publish the MTP USB device descriptors, result 0x{:08X}.", rc);
+            return false;
+        }
+
+        rc = usbDsRegisterInterface(&mInterface);
+        if (R_FAILED(rc)) {
+            Logging::error("usbDsRegisterInterface failed with result 0x{:08X}.", rc);
+            return false;
+        }
+
+        rc = usbDsAddUsbStringDescriptor(&iInterface, "MTP");
+        if (R_FAILED(rc)) {
+            Logging::error("Failed to publish the MTP interface string, result 0x{:08X}.", rc);
+            return false;
+        }
+
+        struct usb_interface_descriptor interfaceDescriptor = {
+            .bLength            = USB_DT_INTERFACE_SIZE,
+            .bDescriptorType    = USB_DT_INTERFACE,
+            .bInterfaceNumber   = (u8)mInterface->interface_index,
+            .bAlternateSetting  = 0,
+            .bNumEndpoints      = 3,
+            .bInterfaceClass    = USB_CLASS_IMAGE,
+            .bInterfaceSubClass = USB_SUBCLASS_STILL_IMAGE,
+            .bInterfaceProtocol = USB_PROTOCOL_BULK_ONLY,
+            .iInterface         = iInterface,
+        };
+
+        // Endpoint numbers are relative to the interface index: interface 0 gets
+        // bulk 0x81/0x01 and interrupt 0x82.
+        struct usb_endpoint_descriptor endpointIn = {
+            .bLength          = USB_DT_ENDPOINT_SIZE,
+            .bDescriptorType  = USB_DT_ENDPOINT,
+            .bEndpointAddress = (u8)(USB_ENDPOINT_IN + mInterface->interface_index + 1),
+            .bmAttributes     = USB_TRANSFER_TYPE_BULK,
+            .wMaxPacketSize   = MAX_PACKET_SIZE_HIGH,
+            .bInterval        = 0,
+        };
+        struct usb_endpoint_descriptor endpointOut = {
+            .bLength          = USB_DT_ENDPOINT_SIZE,
+            .bDescriptorType  = USB_DT_ENDPOINT,
+            .bEndpointAddress = (u8)(USB_ENDPOINT_OUT + mInterface->interface_index + 1),
+            .bmAttributes     = USB_TRANSFER_TYPE_BULK,
+            .wMaxPacketSize   = MAX_PACKET_SIZE_HIGH,
+            .bInterval        = 0,
+        };
+        // The class requires an interrupt IN endpoint for asynchronous events.
+        // We never post to it, but leaving it out makes strict hosts (Windows in
+        // particular) refuse to bind their MTP driver.
+        struct usb_endpoint_descriptor endpointInterrupt = {
+            .bLength          = USB_DT_ENDPOINT_SIZE,
+            .bDescriptorType  = USB_DT_ENDPOINT,
+            .bEndpointAddress = (u8)(USB_ENDPOINT_IN + mInterface->interface_index + 2),
+            .bmAttributes     = USB_TRANSFER_TYPE_INTERRUPT,
+            .wMaxPacketSize   = MAX_PACKET_SIZE_INTERRUPT,
+            .bInterval        = 0x06,
+        };
+
+        struct usb_ss_endpoint_companion_descriptor bulkCompanion = {
+            .bLength           = sizeof(struct usb_ss_endpoint_companion_descriptor),
+            .bDescriptorType   = USB_DT_SS_ENDPOINT_COMPANION,
+            .bMaxBurst         = 0x0F,
+            .bmAttributes      = 0x00,
+            .wBytesPerInterval = 0x00,
+        };
+        struct usb_ss_endpoint_companion_descriptor interruptCompanion = {
+            .bLength           = sizeof(struct usb_ss_endpoint_companion_descriptor),
+            .bDescriptorType   = USB_DT_SS_ENDPOINT_COMPANION,
+            .bMaxBurst         = 0x00,
+            .bmAttributes      = 0x00,
+            .wBytesPerInterval = 0x00,
+        };
+
+        // High speed configuration.
+        rc = usbDsInterface_AppendConfigurationData(mInterface, UsbDeviceSpeed_High, &interfaceDescriptor, USB_DT_INTERFACE_SIZE);
+        if (R_SUCCEEDED(rc)) {
+            rc = usbDsInterface_AppendConfigurationData(mInterface, UsbDeviceSpeed_High, &endpointIn, USB_DT_ENDPOINT_SIZE);
+        }
+        if (R_SUCCEEDED(rc)) {
+            rc = usbDsInterface_AppendConfigurationData(mInterface, UsbDeviceSpeed_High, &endpointOut, USB_DT_ENDPOINT_SIZE);
+        }
+        if (R_SUCCEEDED(rc)) {
+            rc = usbDsInterface_AppendConfigurationData(mInterface, UsbDeviceSpeed_High, &endpointInterrupt, USB_DT_ENDPOINT_SIZE);
+        }
+
+        // SuperSpeed configuration: same descriptors with the bigger bulk packet
+        // size, each endpoint followed by its companion descriptor.
+        endpointIn.wMaxPacketSize  = MAX_PACKET_SIZE_SUPER;
+        endpointOut.wMaxPacketSize = MAX_PACKET_SIZE_SUPER;
+        if (R_SUCCEEDED(rc)) {
+            rc = usbDsInterface_AppendConfigurationData(mInterface, UsbDeviceSpeed_Super, &interfaceDescriptor, USB_DT_INTERFACE_SIZE);
+        }
+        if (R_SUCCEEDED(rc)) {
+            rc = usbDsInterface_AppendConfigurationData(mInterface, UsbDeviceSpeed_Super, &endpointIn, USB_DT_ENDPOINT_SIZE);
+        }
+        if (R_SUCCEEDED(rc)) {
+            rc = usbDsInterface_AppendConfigurationData(mInterface, UsbDeviceSpeed_Super, &bulkCompanion, USB_DT_SS_ENDPOINT_COMPANION_SIZE);
+        }
+        if (R_SUCCEEDED(rc)) {
+            rc = usbDsInterface_AppendConfigurationData(mInterface, UsbDeviceSpeed_Super, &endpointOut, USB_DT_ENDPOINT_SIZE);
+        }
+        if (R_SUCCEEDED(rc)) {
+            rc = usbDsInterface_AppendConfigurationData(mInterface, UsbDeviceSpeed_Super, &bulkCompanion, USB_DT_SS_ENDPOINT_COMPANION_SIZE);
+        }
+        if (R_SUCCEEDED(rc)) {
+            rc = usbDsInterface_AppendConfigurationData(mInterface, UsbDeviceSpeed_Super, &endpointInterrupt, USB_DT_ENDPOINT_SIZE);
+        }
+        if (R_SUCCEEDED(rc)) {
+            rc = usbDsInterface_AppendConfigurationData(mInterface, UsbDeviceSpeed_Super, &interruptCompanion, USB_DT_SS_ENDPOINT_COMPANION_SIZE);
+        }
+        if (R_FAILED(rc)) {
+            Logging::error("Failed to publish the MTP configuration descriptors, result 0x{:08X}.", rc);
+            return false;
+        }
+
+        rc = usbDsInterface_RegisterEndpoint(mInterface, &mEndpointIn, endpointIn.bEndpointAddress);
+        if (R_SUCCEEDED(rc)) {
+            rc = usbDsInterface_RegisterEndpoint(mInterface, &mEndpointOut, endpointOut.bEndpointAddress);
+        }
+        if (R_SUCCEEDED(rc)) {
+            rc = usbDsInterface_RegisterEndpoint(mInterface, &mEndpointIntr, endpointInterrupt.bEndpointAddress);
+        }
+        if (R_FAILED(rc)) {
+            Logging::error("Failed to register the MTP endpoints, result 0x{:08X}.", rc);
+            return false;
+        }
+
+        rc = usbDsInterface_EnableInterface(mInterface);
+        if (R_FAILED(rc)) {
+            Logging::error("usbDsInterface_EnableInterface failed with result 0x{:08X}.", rc);
+            return false;
+        }
+
+        return true;
+    }
+
+    void UsbInterface::finalize(void)
+    {
+        // Before the lock: the control thread takes it for every request it
+        // answers, so joining from inside it would deadlock.
+        stopControlThread();
+
+        {
+            std::lock_guard<std::mutex> lock(mUsbMutex);
+            if (mInitialized) {
+                // Cancel inline rather than through cancelTransfers(), which would
+                // deadlock on the lock we are already holding.
+                if (mEndpointIn != nullptr) {
+                    usbDsEndpoint_Cancel(mEndpointIn);
+                }
+                if (mEndpointOut != nullptr) {
+                    usbDsEndpoint_Cancel(mEndpointOut);
+                }
+                if (mEndpointIntr != nullptr) {
+                    usbDsEndpoint_Cancel(mEndpointIntr);
+                }
+                usbDsDisable();
+                usbDsExit();
+                mInitialized = false;
+            }
+
+            // usbDsExit invalidates the interface/endpoint handles it owns; drop our
+            // copies so a stale pointer can't be posted to on a later restart.
+            mInterface    = nullptr;
+            mEndpointIn   = nullptr;
+            mEndpointOut  = nullptr;
+            mEndpointIntr = nullptr;
+        }
+
+        free(mReadBuffer);
+        free(mWriteBuffer);
+        free(mCtrlBuffer);
+        mReadBuffer  = nullptr;
+        mWriteBuffer = nullptr;
+        mCtrlBuffer  = nullptr;
+    }
+
+    bool UsbInterface::configured(void)
+    {
+        if (!mInitialized) {
+            return false;
+        }
+        UsbState state = UsbState_Detached;
+        if (R_FAILED(usbDsGetState(&state))) {
+            return false;
+        }
+        return state == UsbState_Configured;
+    }
+
+    bool UsbInterface::waitConfigured(u64 timeoutNs)
+    {
+        if (!mInitialized) {
+            return false;
+        }
+        if (configured()) {
+            return true;
+        }
+
+        Event* stateChange = usbDsGetStateChangeEvent();
+        if (stateChange == nullptr) {
+            return false;
+        }
+        if (R_FAILED(eventWait(stateChange, timeoutNs))) {
+            return false;
+        }
+        eventClear(stateChange);
+        return configured();
+    }
+
+    ssize_t UsbInterface::transfer(UsbDsEndpoint* endpoint, void* buffer, size_t size, u64 timeoutNs)
+    {
+        if (!mInitialized || endpoint == nullptr) {
+            return TRANSFER_ERROR;
+        }
+
+        u32 urbId = 0;
+        Result rc;
+        {
+            std::lock_guard<std::mutex> lock(mUsbMutex);
+            rc = usbDsEndpoint_PostBufferAsync(endpoint, buffer, size, &urbId);
+        }
+        if (R_FAILED(rc)) {
+            Logging::debug("usbDsEndpoint_PostBufferAsync failed with result 0x{:08X}.", rc);
+            return TRANSFER_ERROR;
+        }
+
+        // Deliberately outside the lock: this is where the thread parks, and
+        // cancelTransfers() has to be able to take the lock to break it out.
+        bool timedOut = false;
+        if (R_FAILED(eventWait(&endpoint->CompletionEvent, timeoutNs))) {
+            // The URB still owns our buffer, so it has to be cancelled and its
+            // completion drained before the buffer is reused. Cancelling does
+            // not mean nothing arrived: the URB can complete in the window
+            // between the wait expiring and the cancel landing, and a block that
+            // did arrive must never be dropped - the host is already waiting for
+            // the response to it. The report below is what tells the two apart.
+            {
+                std::lock_guard<std::mutex> lock(mUsbMutex);
+                usbDsEndpoint_Cancel(endpoint);
+            }
+            eventWait(&endpoint->CompletionEvent, UINT64_MAX);
+            timedOut = true;
+        }
+        eventClear(&endpoint->CompletionEvent);
+
+        // Always drained, timeout or not: a report left behind by a cancelled
+        // URB stays queued, and the queue holds only eight entries.
+        UsbDsReportData report;
+        {
+            std::lock_guard<std::mutex> lock(mUsbMutex);
+            rc = usbDsEndpoint_GetReportData(endpoint, &report);
+        }
+        if (R_FAILED(rc)) {
+            return TRANSFER_ERROR;
+        }
+
+        u32 transferred = 0;
+        rc              = usbDsParseReportData(&report, urbId, nullptr, &transferred);
+        if (R_FAILED(rc)) {
+            // No completed entry for our URB. After a cancel that is the
+            // ordinary idle outcome; otherwise the transfer genuinely failed.
+            return timedOut ? TRANSFER_TIMEOUT : TRANSFER_ERROR;
+        }
+        if (timedOut && transferred == 0) {
+            return TRANSFER_TIMEOUT;
+        }
+        return (ssize_t)transferred;
+    }
+
+    ssize_t UsbInterface::read(size_t size, u64 timeoutNs)
+    {
+        if (size > TRANSFER_BUFFER_SIZE) {
+            size = TRANSFER_BUFFER_SIZE;
+        }
+        return transfer(mEndpointOut, mReadBuffer, size, timeoutNs);
+    }
+
+    ssize_t UsbInterface::write(size_t size, u64 timeoutNs)
+    {
+        if (size > TRANSFER_BUFFER_SIZE) {
+            return TRANSFER_ERROR;
+        }
+        return transfer(mEndpointIn, mWriteBuffer, size, timeoutNs);
+    }
+
+    void UsbInterface::startControlThread(void)
+    {
+        if (mCtrlThreadValid) {
+            return;
+        }
+
+        mCtrlRunning.store(true);
+        // Same priority and core hint as the server worker. It spends virtually
+        // all of its life parked in eventWait, so it costs nothing to keep.
+        if (R_SUCCEEDED(threadCreate(&mCtrlThread, controlThreadEntry, this, nullptr, 0x4000, 0x2C, -2)) && R_SUCCEEDED(threadStart(&mCtrlThread))) {
+            mCtrlThreadValid = true;
+        }
+        else {
+            mCtrlRunning.store(false);
+            Logging::error("Failed to start the MTP control-request thread; hosts will re-enumerate the device instead of recovering from an error.");
+        }
+    }
+
+    void UsbInterface::stopControlThread(void)
+    {
+        if (!mCtrlThreadValid) {
+            return;
+        }
+
+        mCtrlRunning.store(false);
+        threadWaitForExit(&mCtrlThread);
+        threadClose(&mCtrlThread);
+        mCtrlThreadValid = false;
+    }
+
+    void UsbInterface::controlThreadEntry(void* self)
+    {
+        static_cast<UsbInterface*>(self)->controlLoop();
+    }
+
+    void UsbInterface::controlLoop(void)
+    {
+        while (mCtrlRunning.load()) {
+            // Bounded, so a shutdown is noticed promptly rather than waiting for
+            // a host request that may never come.
+            if (R_FAILED(eventWait(&mInterface->SetupEvent, CONTROL_POLL_NS))) {
+                continue;
+            }
+            eventClear(&mInterface->SetupEvent);
+
+            struct usb_control_setup setup = {};
+            Result rc;
+            {
+                std::lock_guard<std::mutex> lock(mUsbMutex);
+                rc = usbDsInterface_GetSetupPacket(mInterface, &setup, sizeof(setup));
+            }
+            if (R_FAILED(rc)) {
+                Logging::debug("usbDsInterface_GetSetupPacket failed with result 0x{:08X}.", rc);
+                continue;
+            }
+            handleSetupPacket(setup);
+        }
+    }
+
+    void UsbInterface::handleSetupPacket(const struct usb_control_setup& setup)
+    {
+        switch (setup.bRequest) {
+            case PTP_REQUEST_GET_DEVICE_STATUS: {
+                // The request a host makes as soon as anything on the bulk pipes
+                // looks wrong. Answering OK is what lets it resynchronise on the
+                // session it already has; silence is what makes it give up and
+                // re-enumerate the device.
+                const u8 status[PTP_STATUS_DATASET_SIZE] = {
+                    (u8)(PTP_STATUS_DATASET_SIZE & 0xFF),
+                    (u8)(PTP_STATUS_DATASET_SIZE >> 8),
+                    (u8)(PTP_RESPONSE_OK & 0xFF),
+                    (u8)(PTP_RESPONSE_OK >> 8),
+                };
+                controlSend(status, std::min<size_t>(setup.wLength, sizeof(status)));
+                break;
+            }
+
+            case PTP_REQUEST_CANCEL:
+                // Drain the cancellation code the host sent, then break whatever
+                // data phase it gave up on. The responder sees that transfer fail
+                // and rebuilds its session, which is the state the host expects
+                // to find on the next command.
+                if (controlReceive(std::min<size_t>(setup.wLength, PTP_CANCEL_PAYLOAD_SIZE))) {
+                    Logging::debug("Host cancelled the current MTP transaction.");
+                    cancelTransfers();
+                }
+                break;
+
+            case PTP_REQUEST_DEVICE_RESET:
+                // No data stage of its own: the acknowledgement is the answer.
+                controlSend(nullptr, 0);
+                cancelTransfers();
+                break;
+
+            case PTP_REQUEST_GET_EXTENDED_EVENT: {
+                // Nothing is ever posted to the interrupt endpoint, so there is
+                // no extended event data to hand back. A stall is the defined way
+                // of saying so, and hosts read it as "nothing pending".
+                std::lock_guard<std::mutex> lock(mUsbMutex);
+                usbDsInterface_StallCtrl(mInterface);
+                break;
+            }
+
+            default: {
+                Logging::debug("Stalling unsupported MTP control request 0x{:02X}.", setup.bRequest);
+                std::lock_guard<std::mutex> lock(mUsbMutex);
+                usbDsInterface_StallCtrl(mInterface);
+                break;
+            }
+        }
+    }
+
+    bool UsbInterface::controlSend(const void* data, size_t size)
+    {
+        if (size > USB_BUFFER_ALIGNMENT) {
+            return false;
+        }
+        if (size > 0) {
+            std::memcpy(mCtrlBuffer, data, size);
+        }
+
+        u32 urbId = 0;
+        Result rc;
+        {
+            std::lock_guard<std::mutex> lock(mUsbMutex);
+            rc = usbDsInterface_CtrlInPostBufferAsync(mInterface, mCtrlBuffer, size, &urbId);
+        }
+        if (R_FAILED(rc)) {
+            Logging::debug("usbDsInterface_CtrlInPostBufferAsync failed with result 0x{:08X}.", rc);
+            return false;
+        }
+
+        if (R_FAILED(eventWait(&mInterface->CtrlInCompletionEvent, CONTROL_TIMEOUT_NS))) {
+            Logging::debug("Timed out answering MTP control request.");
+            return false;
+        }
+        eventClear(&mInterface->CtrlInCompletionEvent);
+
+        UsbDsReportData report;
+        {
+            std::lock_guard<std::mutex> lock(mUsbMutex);
+            rc = usbDsInterface_GetCtrlInReportData(mInterface, &report);
+        }
+        if (R_FAILED(rc)) {
+            return false;
+        }
+        return R_SUCCEEDED(usbDsParseReportData(&report, urbId, nullptr, nullptr));
+    }
+
+    bool UsbInterface::controlReceive(size_t size)
+    {
+        if (size > USB_BUFFER_ALIGNMENT) {
+            return false;
+        }
+
+        u32 urbId = 0;
+        Result rc;
+        {
+            std::lock_guard<std::mutex> lock(mUsbMutex);
+            rc = usbDsInterface_CtrlOutPostBufferAsync(mInterface, mCtrlBuffer, size, &urbId);
+        }
+        if (R_FAILED(rc)) {
+            Logging::debug("usbDsInterface_CtrlOutPostBufferAsync failed with result 0x{:08X}.", rc);
+            return false;
+        }
+
+        if (R_FAILED(eventWait(&mInterface->CtrlOutCompletionEvent, CONTROL_TIMEOUT_NS))) {
+            Logging::debug("Timed out receiving an MTP control request payload.");
+            return false;
+        }
+        eventClear(&mInterface->CtrlOutCompletionEvent);
+
+        UsbDsReportData report;
+        {
+            std::lock_guard<std::mutex> lock(mUsbMutex);
+            rc = usbDsInterface_GetCtrlOutReportData(mInterface, &report);
+        }
+        if (R_FAILED(rc)) {
+            return false;
+        }
+        return R_SUCCEEDED(usbDsParseReportData(&report, urbId, nullptr, nullptr));
+    }
+
+    void UsbInterface::cancelTransfers(void)
+    {
+        std::lock_guard<std::mutex> lock(mUsbMutex);
+        if (!mInitialized) {
+            return;
+        }
+        if (mEndpointIn != nullptr) {
+            usbDsEndpoint_Cancel(mEndpointIn);
+        }
+        if (mEndpointOut != nullptr) {
+            usbDsEndpoint_Cancel(mEndpointOut);
+        }
+        if (mEndpointIntr != nullptr) {
+            usbDsEndpoint_Cancel(mEndpointIntr);
+        }
+    }
+}
