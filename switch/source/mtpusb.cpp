@@ -26,8 +26,10 @@
 
 #include "mtpusb.hpp"
 #include "logging.hpp"
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <malloc.h>
 
 namespace {
@@ -35,10 +37,9 @@ namespace {
     // boundary. memalign gives us that; plain new/malloc does not guarantee it.
     constexpr size_t USB_BUFFER_ALIGNMENT = 0x1000;
 
-    // USB Still Image class, PIMA 15740 subclass, bulk-only protocol. This trio
-    // is what makes a host load its PTP/MTP driver instead of treating us as a
-    // vendor-specific device.
-    constexpr u8 USB_CLASS_IMAGE          = 0x06;
+    // Paired with libnx's USB_CLASS_IMAGE: the USB Still Image class, PIMA
+    // 15740 subclass, bulk-only protocol. This trio is what makes a host load
+    // its PTP/MTP driver instead of treating us as a vendor-specific device.
     constexpr u8 USB_SUBCLASS_STILL_IMAGE = 0x01;
     constexpr u8 USB_PROTOCOL_BULK_ONLY   = 0x01;
 
@@ -53,6 +54,32 @@ namespace {
     // class, not off this, so it needs no product of its own.
     constexpr u16 USB_VENDOR_ID  = 0x057E;
     constexpr u16 USB_PRODUCT_ID = 0x3000;
+
+    // The class control requests every PTP host expects on the interface's
+    // control pipe. Get Device Status in particular is what libmtp reaches for
+    // the moment a bulk transfer looks wrong: answer it and the host resynchro-
+    // nises, leave it unanswered and the host resets the device instead.
+    constexpr u8 PTP_REQUEST_CANCEL             = 0x66;
+    constexpr u8 PTP_REQUEST_GET_EXTENDED_EVENT = 0x67;
+    constexpr u8 PTP_REQUEST_DEVICE_RESET       = 0x68;
+    constexpr u8 PTP_REQUEST_GET_DEVICE_STATUS  = 0x69;
+
+    // Direction bit of bmRequestType: set means the data stage runs device to
+    // host.
+    constexpr u8 USB_SETUP_DIRECTION_IN = 0x80;
+
+    // The Cancel Request payload: the cancellation code and the transaction it
+    // applies to.
+    constexpr u16 PTP_CANCEL_PAYLOAD_SIZE = 6;
+    // A Get Device Status dataset is its own length, then a response code.
+    constexpr u16 PTP_STATUS_DATASET_SIZE = 4;
+    constexpr u16 PTP_RESPONSE_OK         = 0x2001;
+
+    // Control transfers are short and the host is waiting on them, so they get a
+    // far tighter deadline than a bulk data phase.
+    constexpr u64 CONTROL_TIMEOUT_NS = 1'000'000'000ULL;
+    // How often the control thread looks up from its wait to notice a shutdown.
+    constexpr u64 CONTROL_POLL_NS = 100'000'000ULL;
 
     // Deliberately not the console's real serial number: MTP hands the serial to
     // every host that enumerates us, and Checkpoint has no reason to publish it.
@@ -92,7 +119,10 @@ namespace MTP {
 
         mReadBuffer  = (u8*)memalign(USB_BUFFER_ALIGNMENT, TRANSFER_BUFFER_SIZE);
         mWriteBuffer = (u8*)memalign(USB_BUFFER_ALIGNMENT, TRANSFER_BUFFER_SIZE);
-        if (mReadBuffer == nullptr || mWriteBuffer == nullptr) {
+        // Control payloads are a handful of bytes, but usb:ds posts them by DMA
+        // like any other buffer, so this one is page-aligned too.
+        mCtrlBuffer = (u8*)memalign(USB_BUFFER_ALIGNMENT, USB_BUFFER_ALIGNMENT);
+        if (mReadBuffer == nullptr || mWriteBuffer == nullptr || mCtrlBuffer == nullptr) {
             Logging::error("Failed to allocate the {} byte MTP transfer buffers.", TRANSFER_BUFFER_SIZE);
             finalize();
             return false;
@@ -121,6 +151,8 @@ namespace MTP {
             return false;
         }
 
+        startControlThread();
+
         Logging::info("MTP USB interface enabled.");
         return true;
     }
@@ -145,7 +177,7 @@ namespace MTP {
             return false;
         }
 
-        UsbDeviceDescriptor deviceDescriptor = {
+        struct usb_device_descriptor deviceDescriptor = {
             .bLength            = USB_DT_DEVICE_SIZE,
             .bDescriptorType    = USB_DT_DEVICE,
             .bcdUSB             = 0x0200,
@@ -311,6 +343,10 @@ namespace MTP {
 
     void UsbInterface::finalize(void)
     {
+        // Before the lock: the control thread takes it for every request it
+        // answers, so joining from inside it would deadlock.
+        stopControlThread();
+
         {
             std::lock_guard<std::mutex> lock(mUsbMutex);
             if (mInitialized) {
@@ -340,8 +376,10 @@ namespace MTP {
 
         free(mReadBuffer);
         free(mWriteBuffer);
+        free(mCtrlBuffer);
         mReadBuffer  = nullptr;
         mWriteBuffer = nullptr;
+        mCtrlBuffer  = nullptr;
     }
 
     bool UsbInterface::configured(void)
@@ -395,20 +433,25 @@ namespace MTP {
 
         // Deliberately outside the lock: this is where the thread parks, and
         // cancelTransfers() has to be able to take the lock to break it out.
-        rc = eventWait(&endpoint->CompletionEvent, timeoutNs);
-        if (R_FAILED(rc)) {
-            // The URB is still queued and still owns our buffer, so it has to be
-            // cancelled and its completion drained before the buffer is reused.
+        bool timedOut = false;
+        if (R_FAILED(eventWait(&endpoint->CompletionEvent, timeoutNs))) {
+            // The URB still owns our buffer, so it has to be cancelled and its
+            // completion drained before the buffer is reused. Cancelling does
+            // not mean nothing arrived: the URB can complete in the window
+            // between the wait expiring and the cancel landing, and a block that
+            // did arrive must never be dropped - the host is already waiting for
+            // the response to it. The report below is what tells the two apart.
             {
                 std::lock_guard<std::mutex> lock(mUsbMutex);
                 usbDsEndpoint_Cancel(endpoint);
             }
             eventWait(&endpoint->CompletionEvent, UINT64_MAX);
-            eventClear(&endpoint->CompletionEvent);
-            return TRANSFER_TIMEOUT;
+            timedOut = true;
         }
         eventClear(&endpoint->CompletionEvent);
 
+        // Always drained, timeout or not: a report left behind by a cancelled
+        // URB stays queued, and the queue holds only eight entries.
         UsbDsReportData report;
         {
             std::lock_guard<std::mutex> lock(mUsbMutex);
@@ -421,7 +464,12 @@ namespace MTP {
         u32 transferred = 0;
         rc              = usbDsParseReportData(&report, urbId, nullptr, &transferred);
         if (R_FAILED(rc)) {
-            return TRANSFER_ERROR;
+            // No completed entry for our URB. After a cancel that is the
+            // ordinary idle outcome; otherwise the transfer genuinely failed.
+            return timedOut ? TRANSFER_TIMEOUT : TRANSFER_ERROR;
+        }
+        if (timedOut && transferred == 0) {
+            return TRANSFER_TIMEOUT;
         }
         return (ssize_t)transferred;
     }
@@ -440,6 +488,189 @@ namespace MTP {
             return TRANSFER_ERROR;
         }
         return transfer(mEndpointIn, mWriteBuffer, size, timeoutNs);
+    }
+
+    void UsbInterface::startControlThread(void)
+    {
+        if (mCtrlThreadValid) {
+            return;
+        }
+
+        mCtrlRunning.store(true);
+        // Same priority and core hint as the server worker. It spends virtually
+        // all of its life parked in eventWait, so it costs nothing to keep.
+        if (R_SUCCEEDED(threadCreate(&mCtrlThread, controlThreadEntry, this, nullptr, 0x4000, 0x2C, -2)) && R_SUCCEEDED(threadStart(&mCtrlThread))) {
+            mCtrlThreadValid = true;
+        }
+        else {
+            mCtrlRunning.store(false);
+            Logging::error("Failed to start the MTP control-request thread; hosts will re-enumerate the device instead of recovering from an error.");
+        }
+    }
+
+    void UsbInterface::stopControlThread(void)
+    {
+        if (!mCtrlThreadValid) {
+            return;
+        }
+
+        mCtrlRunning.store(false);
+        threadWaitForExit(&mCtrlThread);
+        threadClose(&mCtrlThread);
+        mCtrlThreadValid = false;
+    }
+
+    void UsbInterface::controlThreadEntry(void* self)
+    {
+        static_cast<UsbInterface*>(self)->controlLoop();
+    }
+
+    void UsbInterface::controlLoop(void)
+    {
+        while (mCtrlRunning.load()) {
+            // Bounded, so a shutdown is noticed promptly rather than waiting for
+            // a host request that may never come.
+            if (R_FAILED(eventWait(&mInterface->SetupEvent, CONTROL_POLL_NS))) {
+                continue;
+            }
+            eventClear(&mInterface->SetupEvent);
+
+            struct usb_control_setup setup = {};
+            Result rc;
+            {
+                std::lock_guard<std::mutex> lock(mUsbMutex);
+                rc = usbDsInterface_GetSetupPacket(mInterface, &setup, sizeof(setup));
+            }
+            if (R_FAILED(rc)) {
+                Logging::debug("usbDsInterface_GetSetupPacket failed with result 0x{:08X}.", rc);
+                continue;
+            }
+            handleSetupPacket(setup);
+        }
+    }
+
+    void UsbInterface::handleSetupPacket(const struct usb_control_setup& setup)
+    {
+        switch (setup.bRequest) {
+            case PTP_REQUEST_GET_DEVICE_STATUS: {
+                // The request a host makes as soon as anything on the bulk pipes
+                // looks wrong. Answering OK is what lets it resynchronise on the
+                // session it already has; silence is what makes it give up and
+                // re-enumerate the device.
+                const u8 status[PTP_STATUS_DATASET_SIZE] = {
+                    (u8)(PTP_STATUS_DATASET_SIZE & 0xFF),
+                    (u8)(PTP_STATUS_DATASET_SIZE >> 8),
+                    (u8)(PTP_RESPONSE_OK & 0xFF),
+                    (u8)(PTP_RESPONSE_OK >> 8),
+                };
+                controlSend(status, std::min<size_t>(setup.wLength, sizeof(status)));
+                break;
+            }
+
+            case PTP_REQUEST_CANCEL:
+                // Drain the cancellation code the host sent, then break whatever
+                // data phase it gave up on. The responder sees that transfer fail
+                // and rebuilds its session, which is the state the host expects
+                // to find on the next command.
+                if (controlReceive(std::min<size_t>(setup.wLength, PTP_CANCEL_PAYLOAD_SIZE))) {
+                    Logging::debug("Host cancelled the current MTP transaction.");
+                    cancelTransfers();
+                }
+                break;
+
+            case PTP_REQUEST_DEVICE_RESET:
+                // No data stage of its own: the acknowledgement is the answer.
+                controlSend(nullptr, 0);
+                cancelTransfers();
+                break;
+
+            case PTP_REQUEST_GET_EXTENDED_EVENT: {
+                // Nothing is ever posted to the interrupt endpoint, so there is
+                // no extended event data to hand back. A stall is the defined way
+                // of saying so, and hosts read it as "nothing pending".
+                std::lock_guard<std::mutex> lock(mUsbMutex);
+                usbDsInterface_StallCtrl(mInterface);
+                break;
+            }
+
+            default: {
+                Logging::debug("Stalling unsupported MTP control request 0x{:02X}.", setup.bRequest);
+                std::lock_guard<std::mutex> lock(mUsbMutex);
+                usbDsInterface_StallCtrl(mInterface);
+                break;
+            }
+        }
+    }
+
+    bool UsbInterface::controlSend(const void* data, size_t size)
+    {
+        if (size > USB_BUFFER_ALIGNMENT) {
+            return false;
+        }
+        if (size > 0) {
+            std::memcpy(mCtrlBuffer, data, size);
+        }
+
+        u32 urbId = 0;
+        Result rc;
+        {
+            std::lock_guard<std::mutex> lock(mUsbMutex);
+            rc = usbDsInterface_CtrlInPostBufferAsync(mInterface, mCtrlBuffer, size, &urbId);
+        }
+        if (R_FAILED(rc)) {
+            Logging::debug("usbDsInterface_CtrlInPostBufferAsync failed with result 0x{:08X}.", rc);
+            return false;
+        }
+
+        if (R_FAILED(eventWait(&mInterface->CtrlInCompletionEvent, CONTROL_TIMEOUT_NS))) {
+            Logging::debug("Timed out answering MTP control request.");
+            return false;
+        }
+        eventClear(&mInterface->CtrlInCompletionEvent);
+
+        UsbDsReportData report;
+        {
+            std::lock_guard<std::mutex> lock(mUsbMutex);
+            rc = usbDsInterface_GetCtrlInReportData(mInterface, &report);
+        }
+        if (R_FAILED(rc)) {
+            return false;
+        }
+        return R_SUCCEEDED(usbDsParseReportData(&report, urbId, nullptr, nullptr));
+    }
+
+    bool UsbInterface::controlReceive(size_t size)
+    {
+        if (size > USB_BUFFER_ALIGNMENT) {
+            return false;
+        }
+
+        u32 urbId = 0;
+        Result rc;
+        {
+            std::lock_guard<std::mutex> lock(mUsbMutex);
+            rc = usbDsInterface_CtrlOutPostBufferAsync(mInterface, mCtrlBuffer, size, &urbId);
+        }
+        if (R_FAILED(rc)) {
+            Logging::debug("usbDsInterface_CtrlOutPostBufferAsync failed with result 0x{:08X}.", rc);
+            return false;
+        }
+
+        if (R_FAILED(eventWait(&mInterface->CtrlOutCompletionEvent, CONTROL_TIMEOUT_NS))) {
+            Logging::debug("Timed out receiving an MTP control request payload.");
+            return false;
+        }
+        eventClear(&mInterface->CtrlOutCompletionEvent);
+
+        UsbDsReportData report;
+        {
+            std::lock_guard<std::mutex> lock(mUsbMutex);
+            rc = usbDsInterface_GetCtrlOutReportData(mInterface, &report);
+        }
+        if (R_FAILED(rc)) {
+            return false;
+        }
+        return R_SUCCEEDED(usbDsParseReportData(&report, urbId, nullptr, nullptr));
     }
 
     void UsbInterface::cancelTransfers(void)

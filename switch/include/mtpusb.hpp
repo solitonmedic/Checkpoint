@@ -27,6 +27,7 @@
 #ifndef MTPUSB_HPP
 #define MTPUSB_HPP
 
+#include <atomic>
 #include <cstddef>
 #include <mutex>
 #include <switch.h>
@@ -95,6 +96,24 @@ namespace MTP {
         bool setupDescriptors(void);
         ssize_t transfer(UsbDsEndpoint* endpoint, void* buffer, size_t size, u64 timeoutNs);
 
+        // The four PTP class control requests arrive on the interface's control
+        // pipe, which is a pipe apart from the two the worker drives - so they
+        // are serviced on their own thread, and still answered while the worker
+        // sits parked on a bulk transfer. A host that gets no answer to one of
+        // these stops trying to resynchronise and re-enumerates the device
+        // instead, which is why leaving them unhandled shows up as the cable
+        // dropping rather than as a protocol error.
+        static void controlThreadEntry(void* self);
+        void controlLoop(void);
+        void startControlThread(void);
+        void stopControlThread(void);
+        void handleSetupPacket(const struct usb_control_setup& setup);
+        // Both complete the status stage of the request as well as its data
+        // stage, so a handler that returns is a request the host has seen
+        // through to the end.
+        bool controlSend(const void* data, size_t size);
+        bool controlReceive(size_t size);
+
         UsbDsInterface* mInterface   = nullptr;
         UsbDsEndpoint* mEndpointIn   = nullptr;
         UsbDsEndpoint* mEndpointOut  = nullptr;
@@ -107,6 +126,11 @@ namespace MTP {
         u8* mReadBuffer   = nullptr;
         u8* mWriteBuffer  = nullptr;
         bool mInitialized = false;
+
+        Thread mCtrlThread{};
+        bool mCtrlThreadValid = false;
+        std::atomic<bool> mCtrlRunning{false};
+        u8* mCtrlBuffer = nullptr;
     };
 }
 
