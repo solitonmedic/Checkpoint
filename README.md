@@ -64,6 +64,8 @@ A few scripts ship with the app already:
 * **googledrive** — backs up your save backups to your own Google Drive, with a device-code sign-in and per-backup zips ([setup guide](scripts/googledrive.md))
 * **webdav** — the same for any WebDAV server you already have (Nextcloud, Synology, `rclone serve webdav`, …): uploads only what isn't there yet, and can download a backup back onto the console ([setup guide](scripts/webdav.md))
 * **playcoins** — sets the console's Play Coins (3DS)
+* **extdata** — creates the extdata archive a title has never written, so an extdata backup has somewhere to restore into (3DS)
+* **notifications** — backs up and restores everything behind the Notifications applet, the SpotPass content and the notification list alike, none of which belongs to a title (3DS)
 
 **Writing your own** is documented in full in [`scripts/README.md`](scripts/README.md): the API reference, the interpreter's limits, recipes, and a checklist for both human and AI authors. [`scripts/examples/example.c`](scripts/examples/example.c) is a runnable guided tour, one menu entry per API area. Before copying a script to the SD card, parse-check it on your PC with `tools/scriptlint.sh`.
 

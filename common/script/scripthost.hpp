@@ -123,6 +123,12 @@ public:
     // the platform has no extdata.
     virtual int savOpenExtdata(uint32_t extdataId) = 0;
 
+    // A NAND system savedata archive, keyed by its raw id. Owned by a system
+    // module rather than by a title, so nothing else in this interface can
+    // reach it. -1 where the platform has no such archive. Unlike extdata it
+    // is journalled, so a write is only real after savCommit.
+    virtual int savOpenSystem(uint32_t saveId) = 0;
+
     virtual bool savValid(int handle) = 0;
 
     // Reads the whole file into a ScriptHeap block, NUL-terminated one byte

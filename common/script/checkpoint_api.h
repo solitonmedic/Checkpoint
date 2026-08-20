@@ -63,6 +63,7 @@ CKPT_BINDING(ckpt_sd_exists);
 CKPT_BINDING(ckpt_sav_open);
 CKPT_BINDING(ckpt_sav_open_shared);
 CKPT_BINDING(ckpt_sav_open_extdata);
+CKPT_BINDING(ckpt_sav_open_system);
 CKPT_BINDING(ckpt_sav_read);
 CKPT_BINDING(ckpt_sav_write);
 CKPT_BINDING(ckpt_sav_delete);

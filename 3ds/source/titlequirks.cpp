@@ -36,17 +36,6 @@ bool TitleQuirks::isSystemExcluded(u64 id)
         case 0x0000A402:
         case 0x0000AC02:
         case 0x0000B402:
-        // Internet Browser
-        case 0x00008802:
-        case 0x00009402:
-        case 0x00009D02:
-        case 0x0000A602:
-        case 0x0000AE02:
-        case 0x0000B602:
-        case 0x20008802:
-        case 0x20009402:
-        case 0x20009D02:
-        case 0x2000AE02:
         // Garbage
         case 0x00021A00:
             return true;

@@ -34,7 +34,7 @@
 // remaps that don't follow the usual `lowId >> 8` rule, and the activity-log
 // ids.
 namespace TitleQuirks {
-    // System titles (manuals, browsers, updates, known garbage) that should be
+    // System titles (manuals, updates, known garbage) that should be
     // excluded from the title list regardless of user configuration.
     bool isSystemExcluded(u64 id);
 

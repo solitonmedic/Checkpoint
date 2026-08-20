@@ -168,6 +168,12 @@ namespace {
         // rather than being absent, so one script can serve both consoles.
         int savOpenExtdata(uint32_t) override { return -1; }
 
+        // The Switch has system savedata too, but it lives behind a different
+        // model (system save data ids opened through fsOpenSaveDataFileSystem)
+        // and nothing here needs it yet, so this answers -1 like the calls
+        // above rather than half-supporting it.
+        int savOpenSystem(uint32_t) override { return -1; }
+
         bool savValid(int handle) override { return handle >= 0 && handle < MAX_SAV_HANDLES && mSlots[handle].live; }
 
         int savRead(int handle, const char* path, char** outBuf, int* outSize) override

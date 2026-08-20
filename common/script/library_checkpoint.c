@@ -76,6 +76,17 @@ struct LibraryFunction CheckpointFunctions[] =
     // the two opens above; commit is a no-op on it. -1 = no extdata on this
     // platform, -2 = no free handle, negative Result = open failed.
     { ckpt_sav_open_extdata,   "int sav_open_extdata(int extdataId);" },
+    // A NAND system savedata archive, addressed by its raw id: 0x00010035 is
+    // the NEWS module's, holding the notification list the Notifications applet
+    // shows. This is the sharpest tool in the API — the console itself runs on
+    // these archives (0x00010017 is the config savedata carrying the serial,
+    // the region and the user's settings), no title owns them, and a bad write
+    // is not a lost save but a console that no longer boots the way it did.
+    // Read one before writing it, and never point a write at an id you have not
+    // identified. Every open is logged with its id. -1 = no such archive on
+    // this platform, -2 = no free handle, negative Result = open failed. Unlike
+    // extdata it is journalled, so a write is only real after sav_commit.
+    { ckpt_sav_open_system,    "int sav_open_system(int saveId);" },
     { ckpt_sav_read,           "int sav_read(int h, char* path, char** out, int* outSize);" },
     { ckpt_sav_write,          "int sav_write(int h, char* path, char* data, int size);" },
     { ckpt_sav_delete,         "int sav_delete(int h, char* path);" },

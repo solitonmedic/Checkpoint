@@ -235,6 +235,39 @@ namespace {
             return slot;
         }
 
+        int savOpenSystem(u32 saveId) override
+        {
+            const int slot = freeSlot();
+            if (slot < 0) {
+                return -2;
+            }
+
+            // {mediatype, savedata id}, the same 8-byte path FBI's system
+            // savedata browser opens one with. The id belongs to a system
+            // module, not to a title: 0x00010035 is the NEWS module's, whose
+            // news.db holds the notification list.
+            FS_Archive archive;
+            const u32 path[2] = {MEDIATYPE_NAND, saveId};
+            const Result res  = FSUSER_OpenArchive(&archive, ARCHIVE_SYSTEM_SAVEDATA, {PATH_BINARY, 8, path});
+            if (R_FAILED(res)) {
+                return (int)res;
+            }
+
+            // Every open lands in the log: this is the one archive kind a
+            // script can reach that the console itself depends on, so a report
+            // of a console misbehaving after a script run says which id it was
+            // pointed at.
+            Logging::warning("[script] opened NAND system savedata 0x{:08X}", saveId);
+
+            // Journalled like a title's own save archive, so it commits; but no
+            // title owns it, so the secure-value epilogue has nothing to drop
+            // and uniqueId stays 0 (see savCommit).
+            mSlots[slot].arch       = ArchiveHandle::fromFs(archive);
+            mSlots[slot].commitable = true;
+            mSlots[slot].uniqueId   = 0;
+            return slot;
+        }
+
         bool savValid(int handle) override { return handle >= 0 && handle < MAX_SAV_HANDLES && mSlots[handle].arch; }
 
         int savRead(int handle, const char* path, char** outBuf, int* outSize) override
@@ -345,9 +378,11 @@ namespace {
             }
 
             Result res = FSUSER_ControlArchive(mSlots[handle].arch.fs(), ARCHIVE_ACTION_COMMIT_SAVE_DATA, NULL, 0, NULL, 0);
-            if (R_SUCCEEDED(res)) {
+            if (R_SUCCEEDED(res) && mSlots[handle].uniqueId != 0) {
                 // Same epilogue as restore: drop the secure value so the game accepts
-                // the modified save instead of flagging a rollback.
+                // the modified save instead of flagging a rollback. A system savedata
+                // archive belongs to no title, so there is no secure value to drop and
+                // the commit above is the whole job.
                 u8 out;
                 u64 secureValue = ((u64)SECUREVALUE_SLOT_SD << 32) | (mSlots[handle].uniqueId << 8);
                 res             = FSUSER_ControlSecureSave(SECURESAVE_ACTION_DELETE, &secureValue, 8, &out, 1);

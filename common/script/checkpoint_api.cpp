@@ -315,6 +315,17 @@ void ckpt_sav_open_extdata(struct ParseState* Parser, struct Value* ReturnValue,
     ReturnValue->Val->Integer = host().savOpenExtdata((uint32_t)extdataId);
 }
 
+void ckpt_sav_open_system(struct ParseState* Parser, struct Value* ReturnValue, struct Value** Param, int NumArgs)
+{
+    // A system savedata id is a plain 32-bit number like sav_open_extdata's.
+    // What it addresses is a system module's own storage rather than anything a
+    // title owns, which is why it is its own call and not a flag on one of the
+    // others: nothing about it goes through the catalog.
+    const ScriptArgs args(Parser, Param, NumArgs, "sav_open_system");
+    const int saveId          = args.numInRange(0, 0, 0x7FFFFFFF);
+    ReturnValue->Val->Integer = host().savOpenSystem((uint32_t)saveId);
+}
+
 void ckpt_sav_read(struct ParseState* Parser, struct Value* ReturnValue, struct Value** Param, int NumArgs)
 {
     const ScriptArgs args(Parser, Param, NumArgs, "sav_read");

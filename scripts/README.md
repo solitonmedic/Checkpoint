@@ -445,6 +445,7 @@ A handle is an open save (or extdata) archive. Paths are archive-absolute:
 | `int sav_open(int titleIdx, int kind)` | handle ≥ 0; `-1` unsupported title/kind, `-2` all 8 handles taken, else a negative platform result |
 | `int sav_open_shared(char* extdataIdHex)` | handle ≥ 0 for a console-wide shared extdata archive; `-1` where the platform has none (always on Switch), `-2` no free handle |
 | `int sav_open_extdata(int extdataId)` | handle ≥ 0 for an SD extdata archive addressed by raw id; `-1` no extdata on this platform (always on Switch), `-2` no free handle, else a negative platform result |
+| `int sav_open_system(int saveId)` | handle ≥ 0 for a NAND system savedata archive (3DS); `-1` where the platform has none (always on Switch), `-2` no free handle, else a negative platform result |
 | `int sav_read(int h, char* path, char** out, int* outSize)` | `0` ok; `-3` out of memory, `-4` short read, else a negative platform result |
 | `int sav_write(int h, char* path, char* data, int size)` | `0` ok, else negative |
 | `int sav_delete(int h, char* path)` | `0` ok, else negative |
@@ -460,9 +461,10 @@ A handle is an open save (or extdata) archive. Paths are archive-absolute:
   `*outSize` is `0` — a partial file is **never** handed over as a whole one.
 - `sav_write` is create-or-replace: an existing file is dropped first, so a
   shrinking write leaves no old tail. A zero-length write truncates.
-- **`sav_commit` is what makes writes real.** It also clears the title's secure
-  value, exactly as a restore does, and is a no-op on extdata and on Switch.
-  Commit right after writing.
+- **`sav_commit` is what makes writes real.** On a title's own save it also clears
+  that title's secure value, exactly as a restore does. It is a no-op on extdata
+  and on Switch, and on a system savedata archive it commits without touching a
+  secure value, since no title owns one. Commit right after writing.
 - `sav_list` returns full archive-absolute paths; folders carry a trailing `/`.
   Free it with `delete_directory` (not `free`).
 - `sav_mkdir` creates **one** level (it is not `mkdir -p` like `sd_mkdirs`), and
@@ -491,6 +493,19 @@ an archive the catalog does not list: one your script just created (Checkpoint
 rescans titles on a refresh, not while a script runs), or one written under an id
 Checkpoint does not derive from the title id — a mod's, say. Same handle and same
 `sav_*` calls; `sav_commit` is a no-op on it.
+
+`sav_open_system` (3DS) reaches a **NAND system savedata** archive by its raw id —
+storage a system module owns, which no title and no other call in this API can get
+to.
+
+**This is the sharpest call in the API, and the only one that can leave a console
+worse than a lost save.** These archives are what the console itself runs on, and nothing here asks a title for permission or checks that a write makes
+sense. Read an archive before you write it, never point a write at an id you have
+not identified, and say plainly in your own dialogs what the user is about to
+overwrite. Every open is logged with its id, so a console that misbehaves after a
+script run can be traced to what the script opened. Unlike extdata, a system
+savedata archive is journalled: the write is only real after `sav_commit`, so commit
+each one as you make it rather than at the end of a batch.
 
 ### 7.3 Extdata that does not exist yet (3DS)
 
@@ -1059,6 +1074,7 @@ gate before the console.
 | [`switch/universal/sharkive.c`](switch/universal/sharkive.c) | Switch | Same, for Atmosphere: resolves the build id and writes `/atmosphere/contents/<TITLEID>/cheats/<BUILDID>.txt`. |
 | [`3ds/universal/playcoins.c`](3ds/universal/playcoins.c) | 3DS | Sets Play Coins by editing `/gamecoin.dat` in the Home Menu shared extdata. The shortest real example of `sav_open_shared`. |
 | [`3ds/universal/extdata.c`](3ds/universal/extdata.c) | 3DS | Creates the extdata archive a title has never had, so it appears in the extdata tab and an extdata backup has somewhere to restore into. Also inspects and deletes an archive by raw id. |
+| [`3ds/universal/notifications.c`](3ds/universal/notifications.c) | 3DS | Backs up and restores everything behind the Notifications applet, none of which belongs to a title: the SpotPass content in NAND shared extdata (`0xF0000009`, `0xF000000D`, `0xF000000E`) and the notification list in the NEWS module's system savedata (`0x00010035`). The worked example of `sav_open_system`. |
 | [`examples/example.c`](examples/example.c) | **not bundled** | The annotated API tour: one menu entry per API area. Copy it to `<app root>/scripts/universal/` by hand and run it while reading it. |
 
 `sharkive.c` is genuinely per-target (Luma3DS cheat txt vs Atmosphere build-id
