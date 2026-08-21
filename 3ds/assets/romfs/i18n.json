@@ -1520,6 +1520,42 @@
     "zh": "没有可用的游戏",
     "ru": "Нет доступных тайтлов."
   },
+  "main.refresh": {
+    "en": "Refresh title list",
+    "it": "Aggiorna la lista dei titoli",
+    "es": "Actualizar lista de títulos",
+    "fr": "Actualiser la liste des titres",
+    "de": "Titelliste aktualisieren",
+    "pt": "Atualizar lista de títulos",
+    "nl": "Titellijst vernieuwen",
+    "ja": "タイトル一覧を更新",
+    "zh": "刷新游戏列表",
+    "ru": "Обновить список тайтлов"
+  },
+  "main.refresh_hint": {
+    "en": "Hold {0} to refresh the list",
+    "it": "Tieni premuto {0} per aggiornare la lista",
+    "es": "Mantén pulsado {0} para actualizar la lista",
+    "fr": "Maintenez {0} pour actualiser la liste",
+    "de": "{0} halten, um die Liste zu aktualisieren",
+    "pt": "Segure {0} para atualizar a lista",
+    "nl": "Houd {0} ingedrukt om de lijst te vernieuwen",
+    "ja": "{0} を長押しで一覧を更新",
+    "zh": "长按 {0} 刷新列表",
+    "ru": "Удерживайте {0}, чтобы обновить список"
+  },
+  "main.refresh_holding": {
+    "en": "Keep holding to refresh",
+    "it": "Continua a tenere premuto per aggiornare",
+    "es": "Sigue pulsando para actualizar",
+    "fr": "Maintenez pour actualiser",
+    "de": "Weiter halten zum Aktualisieren",
+    "pt": "Continue segurando para atualizar",
+    "nl": "Blijf ingedrukt houden om te vernieuwen",
+    "ja": "長押しを続けると更新します",
+    "zh": "继续长按以刷新",
+    "ru": "Удерживайте для обновления"
+  },
   "main.select_backup_send": {
     "en": "Select a backup to send.",
     "it": "Seleziona un backup da inviare.",
