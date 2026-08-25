@@ -44,7 +44,7 @@
 #define ROWN 256
 
 #define OFFICIAL_URL "https://api.citrahold.com"
-#define SCRIPT_VERSION "remote-cache-warning"
+#define SCRIPT_VERSION "delete-path-confirmation"
 
 char g_root[ROOTN];
 char g_config_dir[PATHN];
@@ -1398,7 +1398,7 @@ int upload_flow(int type)
     char* out = NULL;
     int out_size = 0;
     int status;
-    char confirm[512];
+    char confirm[PATHN + 128];
     char remote_time[128];
     printf("Starting %s upload...\n", type ? "extdata" : "save");
     log_debug(type ? "starting extdata upload" : "starting save upload");
@@ -1445,7 +1445,8 @@ int upload_flow(int type)
         gui_message("Citrahold rejected the upload.");
         return 0;
     }
-    if (g_delete_after && gui_confirm("Upload succeeded. Delete the local Checkpoint backup?")) {
+    snprintf(confirm, PATHN + 128, "Upload succeeded. Delete this local Checkpoint backup?\n%s", backup);
+    if (g_delete_after && gui_confirm(confirm)) {
         if (!remove_tree(backup)) gui_message("Upload succeeded, but the local backup could not be deleted.");
     }
     gui_message("Citrahold upload completed.");
