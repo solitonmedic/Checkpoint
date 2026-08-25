@@ -45,7 +45,7 @@
 #define ROWN 256
 
 #define OFFICIAL_URL "https://api.citrahold.com"
-#define SCRIPT_VERSION "guard-title-lookup"
+#define SCRIPT_VERSION "shared-api-request"
 
 struct mapping {
     int type;
@@ -520,21 +520,33 @@ char* active_url(void)
     return g_url;
 }
 
+void api_request_setup(char* endpoint, char* extra_headers, char* url, int url_size, char* headers, int headers_size)
+{
+    snprintf(url, url_size, "%s%s", active_url(), endpoint);
+    strcpy(headers, "Content-Type: application/json");
+    if (extra_headers != NULL && extra_headers[0] != '\0') {
+        strncat(headers, "\n", headers_size - strlen(headers) - 1);
+        strncat(headers, extra_headers, headers_size - strlen(headers) - 1);
+    }
+}
+
+void api_request_log(char* endpoint, int status)
+{
+    char line[96];
+    sprintf(line, "HTTP %d %s", status, endpoint);
+    script_log(line);
+}
+
 int api_call(char* endpoint, char* body, char** out, int* out_size)
 {
     char url[URLN];
     char headers[128];
     char* response_headers = NULL;
     int status;
-    sprintf(url, "%s%s", active_url(), endpoint);
-    strcpy(headers, "Content-Type: application/json");
+    api_request_setup(endpoint, NULL, url, URLN, headers, 128);
     status = web_request("POST", url, headers, body, strlen(body), out, out_size, &response_headers);
     if (response_headers != NULL) free(response_headers);
-    {
-        char line[96];
-        sprintf(line, "HTTP %d %s", status, endpoint);
-        script_log(line);
-    }
+    api_request_log(endpoint, status);
     return status;
 }
 
@@ -648,18 +660,9 @@ int api_call_headers(char* endpoint, char* extra_headers, char* body, char** out
     char url[URLN];
     char headers[256];
     int status;
-    sprintf(url, "%s%s", active_url(), endpoint);
-    strcpy(headers, "Content-Type: application/json");
-    if (extra_headers != NULL && extra_headers[0] != '\0') {
-        strcat(headers, "\n");
-        strcat(headers, extra_headers);
-    }
+    api_request_setup(endpoint, extra_headers, url, URLN, headers, 256);
     status = web_request("POST", url, headers, body, strlen(body), out, out_size, response_headers);
-    {
-        char line[96];
-        sprintf(line, "HTTP %d %s", status, endpoint);
-        script_log(line);
-    }
+    api_request_log(endpoint, status);
     return status;
 }
 
@@ -669,15 +672,10 @@ int api_upload_file(char* endpoint, char* path, char** out, int* out_size)
     char headers[128];
     char* response_headers = NULL;
     int status;
-    sprintf(url, "%s%s", active_url(), endpoint);
-    strcpy(headers, "Content-Type: application/json");
+    api_request_setup(endpoint, NULL, url, URLN, headers, 128);
     status = web_upload_file("POST", url, headers, path, out, out_size, &response_headers);
     if (response_headers != NULL) free(response_headers);
-    {
-        char line[96];
-        sprintf(line, "HTTP %d %s", status, endpoint);
-        script_log(line);
-    }
+    api_request_log(endpoint, status);
     return status;
 }
 
