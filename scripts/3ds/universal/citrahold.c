@@ -73,7 +73,6 @@ int g_remote_save_count;
 char g_remote_extdata_game[MAXREMOTE][IDN];
 int g_remote_extdata_count;
 
-char g_body[BODYN];
 char g_upload_payload[PATHN];
 char g_vault_tmp[PATHN];
 char g_vault_old[PATHN];
@@ -294,19 +293,6 @@ void parse_remote_games(char* text)
         p = strchr(p, '\n');
         if (p != NULL) p = p + 1;
     }
-}
-
-void reset_state(void)
-{
-    g_mode[0] = '\0';
-    g_url[0] = '\0';
-    g_official_token[0] = '\0';
-    g_custom_token[0] = '\0';
-    g_delete_after = 0;
-    g_debug = 0;
-    g_map_count = 0;
-    g_remote_save_count = 0;
-    g_remote_extdata_count = 0;
 }
 
 int state_from_plain(char* plain)
@@ -1435,7 +1421,6 @@ int upload_flow(int type)
 {
     int map = choose_mapping(type);
     int idx;
-    char* id;
     char backup[PATHN];
     char names[MAXPICK * IDN];
     int remote_count;
@@ -1494,53 +1479,6 @@ int upload_flow(int type)
         if (!remove_tree(backup)) gui_message("Upload succeeded, but the local backup could not be deleted.");
     }
     gui_message("Citrahold upload completed.");
-    return 1;
-}
-
-int hex_or_base64_write(char* value, char* path)
-{
-    FILE* f;
-    int len = strlen(value);
-    int i = 0;
-    int a;
-    int b;
-    int c;
-    int d;
-    char bytes[FILE_LIMIT];
-    int out = 0;
-    f = fopen(path, "wb");
-    if (f == NULL) return 0;
-    while (i < len) {
-        if (i + 3 >= len) {
-            fclose(f);
-            return 0;
-        }
-        a = base64_value(value[i]);
-        b = base64_value(value[i + 1]);
-        c = value[i + 2] == '=' ? -1 : base64_value(value[i + 2]);
-        d = value[i + 3] == '=' ? -1 : base64_value(value[i + 3]);
-        if (a < 0 || b < 0 || (c < 0 && value[i + 2] != '=') || (d < 0 && value[i + 3] != '=') || (c < 0 && d >= 0) || ((c < 0 || d < 0) && i + 4 < len)) {
-            fclose(f);
-            return 0;
-        }
-        /* Flush before a quartet so every decoded three-byte group fits. */
-        if (out > FILE_LIMIT - 3) {
-            if (fwrite(bytes, 1, out, f) != out) {
-                fclose(f);
-                return 0;
-            }
-            out = 0;
-        }
-        bytes[out++] = (a << 2) | (b >> 4);
-        if (c >= 0) bytes[out++] = ((b & 15) << 4) | (c >> 2);
-        if (d >= 0) bytes[out++] = ((c & 3) << 6) | d;
-        i = i + 4;
-    }
-    if (fwrite(bytes, 1, out, f) != out) {
-        fclose(f);
-        return 0;
-    }
-    fclose(f);
     return 1;
 }
 
