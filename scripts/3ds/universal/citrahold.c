@@ -44,7 +44,7 @@
 #define ROWN 256
 
 #define OFFICIAL_URL "https://api.citrahold.com"
-#define SCRIPT_VERSION "first-run-token-verify"
+#define SCRIPT_VERSION "config-token-verify"
 
 char g_root[ROOTN];
 char g_config_dir[PATHN];
@@ -1832,12 +1832,24 @@ void configuration_menu(void)
     }
     else if (choice == 1) {
         char token[TOKENN];
+        char old_token[TOKENN];
+        strcpy(old_token, active_token());
         gui_keyboard(token, "Full Citrahold token", TOKENN);
         if (token[0] != '\0') {
             if (strcmp(g_mode, "official") == 0) strcpy(g_official_token, token);
             else strcpy(g_custom_token, token);
-            state_write();
-            verify_token();
+            if (verify_token()) {
+                if (!state_write()) {
+                    if (strcmp(g_mode, "official") == 0) strcpy(g_official_token, old_token);
+                    else strcpy(g_custom_token, old_token);
+                    gui_message("The previous token was retained.");
+                }
+            }
+            else {
+                if (strcmp(g_mode, "official") == 0) strcpy(g_official_token, old_token);
+                else strcpy(g_custom_token, old_token);
+                gui_message("The previous token was retained.");
+            }
         }
     }
     else if (choice == 2) server_test();
