@@ -44,7 +44,7 @@
 #define ROWN 256
 
 #define OFFICIAL_URL "https://api.citrahold.com"
-#define SCRIPT_VERSION "config-token-verify"
+#define SCRIPT_VERSION "remote-cache-warning"
 
 char g_root[ROOTN];
 char g_config_dir[PATHN];
@@ -818,6 +818,9 @@ void cache_remote_games(int type, char* names, int count)
             strcpy(g_remote_game[g_remote_count], old_game[i]);
             g_remote_count = g_remote_count + 1;
         }
+    }
+    if (count > MAXREMOTE - g_remote_count) {
+        gui_message("The remote Game ID cache is full; some IDs were not saved.");
     }
     for (i = 0; i < count && g_remote_count < MAXREMOTE; i++) {
         char* game = names + i * IDN;
