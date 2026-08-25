@@ -45,7 +45,7 @@
 #define ROWN 256
 
 #define OFFICIAL_URL "https://api.citrahold.com"
-#define SCRIPT_VERSION "record-mapping-array"
+#define SCRIPT_VERSION "guard-title-lookup"
 
 struct mapping {
     int type;
@@ -1250,7 +1250,8 @@ void assignment_row(int type, char* game, char* row, int size)
     }
     else {
         int idx = title_find(g_maps[map].title);
-        char* name = idx >= 0 ? title_name(idx) : NULL;
+        char* name = NULL;
+        if (idx >= 0) name = title_name(idx);
         if (name != NULL) {
             snprintf(row, size, "%s -> %s", game, name);
             free(name);
