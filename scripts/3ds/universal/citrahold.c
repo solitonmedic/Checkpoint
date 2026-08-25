@@ -1634,9 +1634,11 @@ int download_flow(int type)
     sprintf(temp, "%s%s.citrahold-partial", base, backup_name);
     sprintf(final_path, "%s%s", base, backup_name);
     if (sd_exists(temp)) {
-        gui_message("The temporary download folder already exists.");
-        free(base);
-        return 0;
+        if (!remove_tree(temp)) {
+            free(base);
+            gui_message("Could not remove the stale temporary download folder.");
+            return 0;
+        }
     }
     if (sd_exists(final_path)) {
         free(base);
