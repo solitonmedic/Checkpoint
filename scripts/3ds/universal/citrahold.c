@@ -45,7 +45,7 @@
 #define ROWN 256
 
 #define OFFICIAL_URL "https://api.citrahold.com"
-#define SCRIPT_VERSION "ordinary-milestone-logging"
+#define SCRIPT_VERSION "indexed-game-buffer"
 
 char g_root[ROOTN];
 char g_config_dir[PATHN];
@@ -800,7 +800,7 @@ int remote_games(int type, char* names)
         item = json_array_element(games, i);
         if (json_is_string(item)) {
             char* s = json_get_string(item);
-            strncpy(names + i * IDN, s, IDN - 1);
+            strncpy(&names[i * IDN], s, IDN - 1);
             names[i * IDN + IDN - 1] = '\0';
             free(s);
         }
@@ -809,7 +809,7 @@ int remote_games(int type, char* names)
         }
     }
     printf("Remote %s Game IDs: %d\n", type ? "extdata" : "save", count);
-    for (i = 0; i < count; i++) printf("  %s\n", names + i * IDN);
+    for (i = 0; i < count; i++) printf("  %s\n", &names[i * IDN]);
     cache_remote_games(type, names, count);
     json_delete(root);
     free(out);
@@ -819,7 +819,7 @@ int remote_games(int type, char* names)
 int remote_has(char* names, int count, char* game)
 {
     int i;
-    for (i = 0; i < count; i++) if (strcmp(names + i * IDN, game) == 0) return 1;
+    for (i = 0; i < count; i++) if (strcmp(&names[i * IDN], game) == 0) return 1;
     return 0;
 }
 
@@ -832,7 +832,7 @@ void cache_remote_games(int type, char* names, int count)
         int old_count = g_remote_save_count;
         if (count > MAXREMOTE) gui_message("The save Game ID cache is full; some IDs were not saved.");
         for (i = 0; i < count && kept < MAXREMOTE; i++) {
-            char* game = names + i * IDN;
+            char* game = &names[i * IDN];
             if (game[0] != '\0' && valid_game_id(game)) {
                 if (kept >= old_count || strcmp(g_remote_save_game[kept], game) != 0) changed = 1;
                 kept = kept + 1;
@@ -841,7 +841,7 @@ void cache_remote_games(int type, char* names, int count)
         if (old_count != kept) changed = 1;
         g_remote_save_count = 0;
         for (i = 0; i < count && g_remote_save_count < MAXREMOTE; i++) {
-            char* game = names + i * IDN;
+            char* game = &names[i * IDN];
             if (game[0] != '\0' && valid_game_id(game)) {
                 strcpy(g_remote_save_game[g_remote_save_count], game);
                 g_remote_save_count = g_remote_save_count + 1;
@@ -852,7 +852,7 @@ void cache_remote_games(int type, char* names, int count)
         int old_count = g_remote_extdata_count;
         if (count > MAXREMOTE) gui_message("The extdata Game ID cache is full; some IDs were not saved.");
         for (i = 0; i < count && kept < MAXREMOTE; i++) {
-            char* game = names + i * IDN;
+            char* game = &names[i * IDN];
             if (game[0] != '\0' && valid_game_id(game)) {
                 if (kept >= old_count || strcmp(g_remote_extdata_game[kept], game) != 0) changed = 1;
                 kept = kept + 1;
@@ -861,7 +861,7 @@ void cache_remote_games(int type, char* names, int count)
         if (old_count != kept) changed = 1;
         g_remote_extdata_count = 0;
         for (i = 0; i < count && g_remote_extdata_count < MAXREMOTE; i++) {
-            char* game = names + i * IDN;
+            char* game = &names[i * IDN];
             if (game[0] != '\0' && valid_game_id(game)) {
                 strcpy(g_remote_extdata_game[g_remote_extdata_count], game);
                 g_remote_extdata_count = g_remote_extdata_count + 1;
