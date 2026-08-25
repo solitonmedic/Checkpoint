@@ -45,7 +45,13 @@
 #define ROWN 256
 
 #define OFFICIAL_URL "https://api.citrahold.com"
-#define SCRIPT_VERSION "callee-first-layout"
+#define SCRIPT_VERSION "record-mapping-array"
+
+struct mapping {
+    int type;
+    char title[TITLEIDN];
+    char game[IDN];
+};
 
 char g_root[ROOTN];
 char g_config_dir[PATHN];
@@ -60,9 +66,7 @@ char g_pass[PASSN];
 int g_delete_after;
 int g_debug;
 
-int g_map_type[MAXMAP];
-char g_map_title[MAXMAP][TITLEIDN];
-char g_map_game[MAXMAP][IDN];
+struct mapping g_maps[MAXMAP];
 int g_map_count;
 char g_remote_save_game[MAXREMOTE][IDN];
 int g_remote_save_count;
@@ -237,11 +241,11 @@ void parse_maps(char* text)
         c = strtok(NULL, "|");
         if (a != NULL && b != NULL && c != NULL) {
             if (strncmp(a, "map=save", 8) == 0 || strncmp(a, "map=extdata", 11) == 0) {
-                g_map_type[g_map_count] = (strncmp(a, "map=extdata", 11) == 0) ? 1 : 0;
-                strncpy(g_map_title[g_map_count], b, TITLEIDN - 1);
-                g_map_title[g_map_count][TITLEIDN - 1] = '\0';
-                strncpy(g_map_game[g_map_count], c, IDN - 1);
-                g_map_game[g_map_count][IDN - 1] = '\0';
+                g_maps[g_map_count].type = (strncmp(a, "map=extdata", 11) == 0) ? 1 : 0;
+                strncpy(g_maps[g_map_count].title, b, TITLEIDN - 1);
+                g_maps[g_map_count].title[TITLEIDN - 1] = '\0';
+                strncpy(g_maps[g_map_count].game, c, IDN - 1);
+                g_maps[g_map_count].game[IDN - 1] = '\0';
                 g_map_count = g_map_count + 1;
             }
         }
@@ -332,7 +336,7 @@ int state_to_plain(char* plain, int limit)
     sprintf(line, "\ndelete_after=%d\ndebug=%d\n", g_delete_after, g_debug);
     if (!append_text(plain, line, limit)) return 0;
     for (i = 0; i < g_map_count; i++) {
-        sprintf(line, "map=%s|%s|%s\n", g_map_type[i] ? "extdata" : "save", g_map_title[i], g_map_game[i]);
+        sprintf(line, "map=%s|%s|%s\n", g_maps[i].type ? "extdata" : "save", g_maps[i].title, g_maps[i].game);
         if (!append_text(plain, line, limit)) return 0;
     }
     for (i = 0; i < g_remote_save_count; i++) {
@@ -1218,14 +1222,14 @@ int choose_title(int type)
 int find_map(int type, char* title_id)
 {
     int i;
-    for (i = 0; i < g_map_count; i++) if (g_map_type[i] == type && strcmp(g_map_title[i], title_id) == 0) return i;
+    for (i = 0; i < g_map_count; i++) if (g_maps[i].type == type && strcmp(g_maps[i].title, title_id) == 0) return i;
     return -1;
 }
 
 int find_game_map(int type, char* game)
 {
     int i;
-    for (i = 0; i < g_map_count; i++) if (g_map_type[i] == type && strcmp(g_map_game[i], game) == 0) return i;
+    for (i = 0; i < g_map_count; i++) if (g_maps[i].type == type && strcmp(g_maps[i].game, game) == 0) return i;
     return -1;
 }
 
@@ -1233,9 +1237,7 @@ void remove_mapping(int index)
 {
     int i;
     for (i = index; i < g_map_count - 1; i++) {
-        g_map_type[i] = g_map_type[i + 1];
-        strcpy(g_map_title[i], g_map_title[i + 1]);
-        strcpy(g_map_game[i], g_map_game[i + 1]);
+        g_maps[i] = g_maps[i + 1];
     }
     g_map_count = g_map_count - 1;
 }
@@ -1247,7 +1249,7 @@ void assignment_row(int type, char* game, char* row, int size)
         snprintf(row, size, "(Unassigned) %s", game);
     }
     else {
-        int idx = title_find(g_map_title[map]);
+        int idx = title_find(g_maps[map].title);
         char* name = idx >= 0 ? title_name(idx) : NULL;
         if (name != NULL) {
             snprintf(row, size, "%s -> %s", game, name);
@@ -1339,9 +1341,9 @@ void mappings_menu(void)
             }
             if (old_game < 0 && g_map_count < MAXMAP) old_game = g_map_count++;
             if (old_game >= 0) {
-                g_map_type[old_game] = type;
-                strcpy(g_map_title[old_game], title_id_value);
-                strcpy(g_map_game[old_game], game);
+                g_maps[old_game].type = type;
+                strcpy(g_maps[old_game].title, title_id_value);
+                strcpy(g_maps[old_game].game, game);
                 if (state_write()) gui_message("Game ID linked to title.");
             }
             else gui_message("Too many Game ID links are configured.");
@@ -1358,7 +1360,7 @@ void mappings_menu(void)
         int row_count = g_map_count;
         for (i = 0; i < g_map_count; i++) {
             rows[i] = malloc(IDN + 64);
-            assignment_row(g_map_type[i], g_map_game[i], rows[i], IDN + 64);
+            assignment_row(g_maps[i].type, g_maps[i].game, rows[i], IDN + 64);
         }
         if (g_map_count > 0) {
             pick = gui_pick_one("Unlink which Game ID?", rows, g_map_count);
@@ -1380,9 +1382,9 @@ int choose_mapping(int type)
     int count = 0;
     int i;
     int pick;
-    for (i = 0; i < g_map_count; i++) if (g_map_type[i] == type) {
+    for (i = 0; i < g_map_count; i++) if (g_maps[i].type == type) {
         rows[count] = malloc(IDN + TITLEIDN + 8);
-        sprintf(rows[count], "%s", g_map_game[i]);
+        sprintf(rows[count], "%s", g_maps[i].game);
         indexes[count] = i;
         count = count + 1;
     }
@@ -1444,7 +1446,7 @@ int upload_flow(int type)
         printf("No mapping selected; returning to the Citrahold menu.\n");
         return 0;
     }
-    idx = title_find(g_map_title[map]);
+    idx = title_find(g_maps[map].title);
     if (idx < 0) return 0;
     log_debug("upload title selected");
     if (!choose_backup(idx, type, backup, PATHN)) return 0;
@@ -1455,18 +1457,18 @@ int upload_flow(int type)
         log_debug("remote game list unavailable before upload");
     }
     else log_debug("upload remote game list received");
-    remote_timestamp(type, g_map_game[map], remote_time, 128);
+    remote_timestamp(type, g_maps[map].game, remote_time, 128);
     log_debug("upload remote timestamp received");
     if (remote_count < 0) {
-        sprintf(confirm, "Upload backup for Game ID:\n%s\n\nRemote copy: unavailable\nRemote time: unknown\n\nContinue?", g_map_game[map]);
+        sprintf(confirm, "Upload backup for Game ID:\n%s\n\nRemote copy: unavailable\nRemote time: unknown\n\nContinue?", g_maps[map].game);
     }
     else {
-        sprintf(confirm, "Upload backup for Game ID:\n%s\n\nRemote copy: %s\nRemote time: %s\n\nContinue?", g_map_game[map], remote_has(names, remote_count, g_map_game[map]) ? "exists and will be replaced" : "not present", remote_time[0] == '\0' ? "unknown" : remote_time);
+        sprintf(confirm, "Upload backup for Game ID:\n%s\n\nRemote copy: %s\nRemote time: %s\n\nContinue?", g_maps[map].game, remote_has(names, remote_count, g_maps[map].game) ? "exists and will be replaced" : "not present", remote_time[0] == '\0' ? "unknown" : remote_time);
     }
     if (!gui_confirm(confirm)) return 0;
     log_debug("preparing upload payload");
     g_upload_error = 0;
-    if (!write_upload_payload(backup, g_map_game[map])) {
+    if (!write_upload_payload(backup, g_maps[map].game)) {
         printf("Upload payload preparation failed.\n");
         if (g_upload_error == UPLOAD_ERR_READ) gui_message("A backup file or folder\ncould not be read.");
         else gui_message("Could not create the\ntemporary upload payload.");
@@ -1703,12 +1705,12 @@ int download_flow(int type)
         printf("No mapping selected; returning to the Citrahold menu.\n");
         return 0;
     }
-    idx = title_find(g_map_title[map]);
+    idx = title_find(g_maps[map].title);
     if (idx < 0) return 0;
     {
         char names[MAXPICK * IDN];
         int count_remote = remote_games(type, names);
-        if (count_remote < 0 || !remote_has(names, count_remote, g_map_game[map])) {
+        if (count_remote < 0 || !remote_has(names, count_remote, g_maps[map].game)) {
             gui_message("That Game ID is not present on the server.");
             return 0;
         }
@@ -1730,7 +1732,7 @@ int download_flow(int type)
         gui_message("That Checkpoint backup name already exists.");
         return 0;
     }
-    sprintf(confirm, "Download Game ID:\n%s\ninto:\n%s\n\nContinue?", g_map_game[map], temp);
+    sprintf(confirm, "Download Game ID:\n%s\ninto:\n%s\n\nContinue?", g_maps[map].game, temp);
     if (!gui_confirm(confirm)) {
         free(base);
         return 0;
@@ -1741,7 +1743,7 @@ int download_flow(int type)
         return 0;
     }
 
-    if (!download_body(body, sizeof(body), g_map_game[map], NULL)) {
+    if (!download_body(body, sizeof(body), g_maps[map].game, NULL)) {
         remove_tree(temp);
         free(base);
         gui_message("Could not prepare the download request.");
@@ -1827,7 +1829,7 @@ int download_flow(int type)
             {
                 char parent[PATHN];
                 parent_path(path, parent, PATHN);
-                if (sd_mkdirs(parent) != 0 || !download_remote_file(type, g_map_game[map], key, path, i + 1, count)) {
+                if (sd_mkdirs(parent) != 0 || !download_remote_file(type, g_maps[map].game, key, path, i + 1, count)) {
                     free(key);
                     json_delete(root);
                     remove_tree(temp);
