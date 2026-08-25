@@ -45,7 +45,6 @@
 #include "scriptheap.hpp"
 #include "scripthost.hpp"
 #include "scriptrunner.hpp"
-#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -550,10 +549,9 @@ void ckpt_web_request(struct ParseState* Parser, struct Value* ReturnValue, stru
     ReturnValue->Val->Integer = webResult("web_request", url, Http::perform(req), out, outSize, respHeaders);
 }
 
-static void webUploadFile(
-    struct ParseState* Parser, struct Value* ReturnValue, struct Value** Param, int NumArgs, const char* bindingName, bool removeAfter)
+void ckpt_web_upload_file(struct ParseState* Parser, struct Value* ReturnValue, struct Value** Param, int NumArgs)
 {
-    const ScriptArgs args(Parser, Param, NumArgs, bindingName);
+    const ScriptArgs args(Parser, Param, NumArgs, "web_upload_file");
     const char* method   = args.str(0);
     const char* url      = args.str(1);
     const char* headers  = args.strOr(2, "");
@@ -567,43 +565,22 @@ static void webUploadFile(
         *respHeaders = nullptr;
     }
 
-    // Copy the path only after every script argument has been validated: a
-    // validation failure longjmps out of picoc and cannot unwind C++ objects.
-    const std::string uploadPath = filePath;
     Http::Request req;
     req.method     = method; // "PUT" for the resumable session
     req.url        = url;
     req.headers    = headers;
-    req.uploadPath = uploadPath;
+    req.uploadPath = filePath;
     // A redirect would re-send the body without rewinding the stream.
     req.followRedirects = false;
     req.captureHeaders  = respHeaders != nullptr;
 
     const Http::Response res = Http::perform(req);
-    if (removeAfter) {
-        errno = 0;
-        if (std::remove(uploadPath.c_str()) != 0 && errno != ENOENT) {
-            Logging::warning("[script] {} could not remove one-shot upload '{}'", bindingName, uploadPath);
-            ReturnValue->Val->Integer = -4;
-            return;
-        }
-    }
     if (res.result == Http::Result::FileError) {
-        Logging::warning("[script] {} can't open '{}'", bindingName, uploadPath);
+        Logging::warning("[script] web_upload_file can't open '{}'", filePath);
         ReturnValue->Val->Integer = -3; // the file, not the network: a script can retry a different path
         return;
     }
-    ReturnValue->Val->Integer = webResult(bindingName, url, res, out, outSize, respHeaders);
-}
-
-void ckpt_web_upload_file(struct ParseState* Parser, struct Value* ReturnValue, struct Value** Param, int NumArgs)
-{
-    webUploadFile(Parser, ReturnValue, Param, NumArgs, "web_upload_file", false);
-}
-
-void ckpt_web_upload_file_once(struct ParseState* Parser, struct Value* ReturnValue, struct Value** Param, int NumArgs)
-{
-    webUploadFile(Parser, ReturnValue, Param, NumArgs, "web_upload_file_once", true);
+    ReturnValue->Val->Integer = webResult("web_upload_file", url, res, out, outSize, respHeaders);
 }
 
 void ckpt_url_encode(struct ParseState* Parser, struct Value* ReturnValue, struct Value** Param, int NumArgs)

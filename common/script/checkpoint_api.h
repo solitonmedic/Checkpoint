@@ -84,7 +84,6 @@ CKPT_BINDING(ckpt_net_ip);
 CKPT_BINDING(ckpt_web_get);
 CKPT_BINDING(ckpt_web_request);
 CKPT_BINDING(ckpt_web_upload_file);
-CKPT_BINDING(ckpt_web_upload_file_once);
 CKPT_BINDING(ckpt_url_encode);
 CKPT_BINDING(ckpt_http_header_value);
 

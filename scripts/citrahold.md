@@ -18,10 +18,6 @@ Copy `citrahold.c` to:
 Restart Checkpoint after replacing the file. From Checkpoint, press SELECT and
 choose **citrahold**.
 
-This revision requires a Checkpoint build that provides
-`web_upload_file_once`. Copying only the script onto an older release will leave
-that binding undefined when an upload is attempted.
-
 ## First-run setup
 
 On the first run:
@@ -84,10 +80,10 @@ While preparing an upload, the script creates:
 /3ds/Checkpoint/config/citrahold-upload-payload.json
 ```
 
-This file contains the plaintext, Base64-encoded upload request. Checkpoint's
-one-shot native upload owns the file and removes it before returning after a
-successful transfer, a transfer failure, or Hold-B cancellation. Startup also
-removes a stale copy after a power loss or an abort before the upload begins.
+This file contains the plaintext, Base64-encoded upload request. The script
+removes it after a successful transfer, a transfer failure, or Hold-B
+cancellation. Startup also removes a stale copy after a power loss or an abort
+before the upload begins.
 
 Ordinary milestones are sent to Checkpoint's script log. **Debug logging**
 also writes non-secret diagnostic lines to:
@@ -158,8 +154,12 @@ successful upload responses; other statuses are reported as a rejected upload.
 upload presents the exact local backup path and asks for confirmation before
 recursively removing it. The option can be toggled under **Configuration**.
 
-The upload uses Checkpoint's `web_upload_file_once` binding. Cleanup happens
-inside that native call, before control returns to the abortable interpreter.
+The upload uses Checkpoint's existing `web_upload_file` binding. Checkpoint
+checks Hold-B between script statements, so the upload and `unlink()` are kept
+in one conditional expression: the upload result is evaluated first and both
+branches remove the payload before the interpreter can reach its next abort
+check. The duplicated branches are intentional because picoc does not implement
+the comma operator.
 
 ## Downloads
 
@@ -234,9 +234,9 @@ The preceding script revision was exercised on a 3DS with the active server for
 server activation, Game ID refresh, save and extdata upload/download, invalid
 reauthentication, retained-token relaunch, first-run cancellation, invalid
 token handling, successful shorthand-token setup, and relaunch using the saved
-vault. Those tests completed without a script crash. Because this revision adds
-native one-shot upload cleanup and local backup-name validation, repeat the
-hardware upload, Hold-B upload-abort, and download-name tests before merging.
+vault. Those tests completed without a script crash. Because this revision
+changes upload cleanup sequencing and adds local backup-name validation, repeat
+the hardware upload, Hold-B upload-abort, and download-name tests before merging.
 
 The source checks used for the script are:
 

@@ -147,10 +147,6 @@ struct LibraryFunction CheckpointFunctions[] =
     // file, not the network). While it runs it drives the innermost progress
     // bar itself (bytes sent), and hold-B aborts it.
     { ckpt_web_upload_file,    "int web_upload_file(char* method, char* url, char* headers, char* filePath, char** out, int* outSize, char** respHeaders);" },
-    // One-shot upload for sensitive generated payloads. The transfer owns
-    // filePath and removes it before returning on success, failure or hold-B
-    // cancellation. Returns -4 if that cleanup itself fails.
-    { ckpt_web_upload_file_once, "int web_upload_file_once(char* method, char* url, char* headers, char* filePath, char** out, int* outSize, char** respHeaders);" },
     // Percent-encode a string for form bodies / query params (malloc'd).
     { ckpt_url_encode,         "char* url_encode(char* s);" },
     // Value of one header key in a raw response header block ("" if absent),
@@ -211,7 +207,7 @@ struct LibraryFunction CheckpointFunctions[] =
     // layer to 0/total and drops every deeper layer, so beginning the next outer
     // item cannot leave a stale inner bar behind. total <= 0 means "unknown":
     // the bar renders indeterminate and shows the raw count. Long native calls
-    // (web_upload_file*, zip_dir, unzip) drive an extra innermost bar themselves.
+    // (web_upload_file, zip_dir, unzip) drive an extra innermost bar themselves.
     { ckpt_progress_begin,     "void progress_begin(int layer, char* label, int total);" },
     { ckpt_progress_set,       "void progress_set(int layer, int done);" },
     { ckpt_progress_label,     "void progress_label(int layer, char* label);" },

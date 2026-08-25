@@ -33,6 +33,7 @@
 #define B64_CHUNK 1536
 #define UPLOAD_ERR_READ 1
 #define UPLOAD_ERR_TEMP 2
+#define UPLOAD_STATUS_CLEANUP -4
 #define PATHN 1024
 #define IDN 128
 #define TITLEIDN 17
@@ -687,9 +688,17 @@ int api_upload_file(char* endpoint, char* path, char** out, int* out_size)
     char url[URLN];
     char headers[128];
     char* response_headers = NULL;
+    int cleanup;
     int status;
     api_request_setup(endpoint, url, URLN, headers);
-    status = web_upload_file_once("POST", url, headers, path, out, out_size, &response_headers);
+    /*
+     * Hold-B is observed before the next statement after this native call.
+     * Keep unlink in the same expression so the plaintext is removed first.
+     * Both conditional arms are deliberately identical: picoc has ?: but no
+     * comma operator, and the condition sequences the upload before either arm.
+    */
+    cleanup = (status = web_upload_file("POST", url, headers, path, out, out_size, &response_headers)) ? unlink(path) : unlink(path);
+    if (cleanup != 0) status = UPLOAD_STATUS_CLEANUP;
     if (response_headers != NULL) free(response_headers);
     api_request_log(endpoint, status);
     return status;
@@ -1496,7 +1505,7 @@ int upload_flow(int type)
     status = api_upload_file(type ? "/uploadMultiExtdata" : "/uploadMultiSaves", g_upload_payload, &out, &out_size);
     if (out != NULL) free(out);
     printf("Upload response: HTTP %d\n", status);
-    if (status == -4) {
+    if (status == UPLOAD_STATUS_CLEANUP) {
         gui_message("The upload ended, but Checkpoint could not remove the plaintext payload.");
         log_transfer_result(type, "upload", "failed: plaintext cleanup failed");
         return 0;
