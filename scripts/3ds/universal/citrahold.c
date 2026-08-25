@@ -68,6 +68,7 @@ int g_remote_count;
 
 char g_body[BODYN];
 char g_upload_payload[PATHN];
+char g_vault_tmp[PATHN];
 int g_upload_error;
 int g_upload_total;
 int g_upload_done;
@@ -102,10 +103,12 @@ void init_paths(void)
     sprintf(g_log_dir, "%s/logs/citrahold", root);
     sprintf(g_log_path, "%s/logs/citrahold/citrahold.log", root);
     sprintf(g_upload_payload, "%s/config/citrahold-upload-payload.json", root);
+    sprintf(g_vault_tmp, "%s/config/citrahold.vault.tmp", root);
     sd_mkdirs(g_log_dir);
     free(root);
     /* A power loss can leave the streamed request body behind. Never retain it. */
     unlink(g_upload_payload);
+    unlink(g_vault_tmp);
     g_mode[0] = '\0';
     g_url[0] = '\0';
     g_official_token[0] = '\0';
@@ -355,7 +358,8 @@ int state_write(void)
         return 0;
     }
     sd_mkdirs(g_config_dir);
-    f = fopen(g_vault, "wb");
+    unlink(g_vault_tmp);
+    f = fopen(g_vault_tmp, "wb");
     if (f == NULL) {
         free(blob);
         gui_message("Could not write the encrypted state.");
@@ -363,11 +367,17 @@ int state_write(void)
     }
     if (fwrite(blob, 1, blob_size, f) != blob_size) {
         fclose(f);
+        unlink(g_vault_tmp);
         free(blob);
         gui_message("The encrypted state was written short.");
         return 0;
     }
-    fclose(f);
+    if (fclose(f) != 0 || rename(g_vault_tmp, g_vault) != 0) {
+        unlink(g_vault_tmp);
+        free(blob);
+        gui_message("Could not commit the encrypted state.");
+        return 0;
+    }
     free(blob);
     return 1;
 }
