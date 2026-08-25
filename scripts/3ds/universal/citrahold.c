@@ -45,7 +45,7 @@
 #define ROWN 256
 
 #define OFFICIAL_URL "https://api.citrahold.com"
-#define SCRIPT_VERSION "dead-code-cleanup"
+#define SCRIPT_VERSION "first-run-status"
 
 struct mapping {
     int type;
@@ -589,6 +589,7 @@ int verify_token(void)
     return 1;
 }
 
+/* Returns 1 on success, 0 on user cancellation, and -1 on operational failure. */
 int configure_first_run(void)
 {
     char token[TOKENN];
@@ -609,13 +610,13 @@ int configure_first_run(void)
         if (status != 200 || out == NULL) {
             if (out != NULL) free(out);
             gui_message("The shorthand token was rejected.");
-            return 0;
+            return -1;
         }
         root = json_new();
         if (root == NULL) {
             free(out);
             gui_message("Could not allocate the token response.");
-            return 0;
+            return -1;
         }
         json_parse(root, out);
         exchanged[0] = '\0';
@@ -623,7 +624,7 @@ int configure_first_run(void)
             json_delete(root);
             free(out);
             gui_message("The server returned an invalid token response.");
-            return 0;
+            return -1;
         }
         json_delete(root);
         free(out);
@@ -634,13 +635,13 @@ int configure_first_run(void)
     if (!verify_token()) {
         if (strcmp(g_mode, "official") == 0) g_official_token[0] = '\0';
         else g_custom_token[0] = '\0';
-        return 0;
+        return -1;
     }
     if (gui_confirm("Add a passphrase to the encrypted state?")) {
         gui_keyboard(g_pass, "Enter passphrase", PASSN);
         if (g_pass[0] == '\0') return 0;
     }
-    return state_write();
+    return state_write() ? 1 : -1;
 }
 
 /* Like api_call(), with extra newline-separated request headers. The caller
@@ -1897,7 +1898,9 @@ int main(int argc, char** argv)
     init_paths();
     loaded = state_read();
     if (loaded == 0) {
-        if (!configure_first_run()) return 0;
+        loaded = configure_first_run();
+        if (loaded < 0) return 1;
+        if (loaded == 0) return 0;
     }
     else if (loaded < 0) return 1;
     if (g_mode[0] == '\0') return 1;
