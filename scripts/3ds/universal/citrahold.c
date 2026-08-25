@@ -1492,22 +1492,40 @@ int safe_remote_path(char* path)
     return 1;
 }
 
-int range_total(char* headers)
+int parse_content_range(char* headers, int* start, int* end, int* total)
 {
     char* value;
-    int i;
-    int total = 0;
+    char* cursor;
+    char* stop;
+    int parsed_start = 0;
+    int parsed_end = 0;
+    int parsed_total = 0;
+    int valid = 1;
     if (headers == NULL) return 0;
     value = http_header_value(headers, "Content-Range");
     if (value == NULL) return 0;
-    for (i = 0; value[i] != '\0'; i++) {
-        if (value[i] == '/') {
-            total = atoi(value + i + 1);
-            break;
-        }
+    if (strncmp(value, "bytes ", 6) != 0) valid = 0;
+    if (valid) {
+        cursor = value + 6;
+        parsed_start = strtol(cursor, &stop, 10);
+        if (stop == cursor || parsed_start < 0 || *stop != '-') valid = 0;
+    }
+    if (valid) {
+        cursor = stop + 1;
+        parsed_end = strtol(cursor, &stop, 10);
+        if (stop == cursor || parsed_end < parsed_start || *stop != '/') valid = 0;
+    }
+    if (valid) {
+        cursor = stop + 1;
+        parsed_total = strtol(cursor, &stop, 10);
+        if (stop == cursor || parsed_total <= parsed_end || *stop != '\0') valid = 0;
     }
     free(value);
-    return total;
+    if (!valid) return 0;
+    *start = parsed_start;
+    *end = parsed_end;
+    *total = parsed_total;
+    return 1;
 }
 
 int download_body(char* body, int body_size, char* game, char* file)
@@ -1546,6 +1564,9 @@ int download_remote_file(int type, char* game, char* remote, char* local, int fi
     int status;
     int received = 0;
     int total = 0;
+    int range_start;
+    int range_end;
+    int range_total;
     int first = 1;
 
     while (first || received < total) {
@@ -1563,15 +1584,25 @@ int download_remote_file(int type, char* game, char* remote, char* local, int fi
             printf("Download chunk failed: HTTP %d, %d bytes.\n", status, out_size);
             return 0;
         }
-        if (first) {
-            total = range_total(response_headers);
-            if (total <= 0 && status == 200) total = out_size;
-            if (total <= 0) {
+        if (status == 200) {
+            if (!first || received != 0) {
                 free(out);
                 if (response_headers != NULL) free(response_headers);
                 progress_end(1);
                 return 0;
             }
+            total = out_size;
+        }
+        else {
+            if (!parse_content_range(response_headers, &range_start, &range_end, &range_total) || range_start != received || range_end - range_start + 1 != out_size || (total != 0 && range_total != total)) {
+                free(out);
+                if (response_headers != NULL) free(response_headers);
+                progress_end(1);
+                return 0;
+            }
+            total = range_total;
+        }
+        if (first) {
             sprintf(note, "File %d of %d", file_number, file_count);
             progress_begin(1, note, total);
             first = 0;
