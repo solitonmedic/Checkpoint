@@ -45,7 +45,7 @@
 #define ROWN 256
 
 #define OFFICIAL_URL "https://api.citrahold.com"
-#define SCRIPT_VERSION "indexed-game-buffer"
+#define SCRIPT_VERSION "callee-first-layout"
 
 char g_root[ROOTN];
 char g_config_dir[PATHN];
@@ -76,12 +76,6 @@ char g_vault_old[PATHN];
 int g_upload_error;
 int g_upload_total;
 int g_upload_done;
-
-char* active_url(void);
-char* active_token(void);
-void cache_remote_games(int type, char* names, int count);
-int json_string_field(struct JSON* root, char* key, char* dst, int size);
-int is_regular_file(char* path);
 
 void log_debug(char* message)
 {
@@ -510,6 +504,85 @@ int valid_game_id(char* game)
     return 1;
 }
 
+char* active_token(void)
+{
+    if (strcmp(g_mode, "official") == 0) return g_official_token;
+    return g_custom_token;
+}
+
+char* active_url(void)
+{
+    if (strcmp(g_mode, "official") == 0) return OFFICIAL_URL;
+    return g_url;
+}
+
+int api_call(char* endpoint, char* body, char** out, int* out_size)
+{
+    char url[URLN];
+    char headers[128];
+    char* response_headers = NULL;
+    int status;
+    sprintf(url, "%s%s", active_url(), endpoint);
+    strcpy(headers, "Content-Type: application/json");
+    status = web_request("POST", url, headers, body, strlen(body), out, out_size, &response_headers);
+    if (response_headers != NULL) free(response_headers);
+    {
+        char line[96];
+        sprintf(line, "HTTP %d %s", status, endpoint);
+        script_log(line);
+    }
+    return status;
+}
+
+int json_string_field(struct JSON* root, char* key, char* dst, int size)
+{
+    struct JSON* field;
+    char* value;
+    if (!json_object_contains(root, key)) return 0;
+    field = json_object_element(root, key);
+    if (!json_is_string(field)) return 0;
+    value = json_get_string(field);
+    strncpy(dst, value, size - 1);
+    dst[size - 1] = '\0';
+    free(value);
+    return 1;
+}
+
+int verify_token(void)
+{
+    char body[512];
+    char* out = NULL;
+    int n = 0;
+    int status;
+    char user[IDN];
+    sprintf(body, "{\"token\":\"%s\"}", active_token());
+    status = api_call("/getUserID", body, &out, &n);
+    if (status != 200 || out == NULL) {
+        if (out != NULL) free(out);
+        gui_message("The Citrahold token was rejected.");
+        return 0;
+    }
+    {
+        struct JSON* root = json_new();
+        json_parse(root, out);
+        user[0] = '\0';
+        if (!json_string_field(root, "userID", user, IDN)) {
+            json_delete(root);
+            free(out);
+            gui_message("The server returned an invalid token response.");
+            return 0;
+        }
+        json_delete(root);
+    }
+    free(out);
+    {
+        char line[180];
+        sprintf(line, "Authenticated as %s", user);
+        gui_message(line);
+    }
+    return 1;
+}
+
 int configure_first_run(void)
 {
     char token[TOKENN];
@@ -564,36 +637,6 @@ int configure_first_run(void)
     return state_write();
 }
 
-char* active_token(void)
-{
-    if (strcmp(g_mode, "official") == 0) return g_official_token;
-    return g_custom_token;
-}
-
-char* active_url(void)
-{
-    if (strcmp(g_mode, "official") == 0) return OFFICIAL_URL;
-    return g_url;
-}
-
-int api_call(char* endpoint, char* body, char** out, int* out_size)
-{
-    char url[URLN];
-    char headers[128];
-    char* response_headers = NULL;
-    int status;
-    sprintf(url, "%s%s", active_url(), endpoint);
-    strcpy(headers, "Content-Type: application/json");
-    status = web_request("POST", url, headers, body, strlen(body), out, out_size, &response_headers);
-    if (response_headers != NULL) free(response_headers);
-    {
-        char line[96];
-        sprintf(line, "HTTP %d %s", status, endpoint);
-        script_log(line);
-    }
-    return status;
-}
-
 /* Like api_call(), with extra newline-separated request headers. The caller
  * owns response_headers and must free it when it is non-NULL. */
 int api_call_headers(char* endpoint, char* extra_headers, char* body, char** out, int* out_size, char** response_headers)
@@ -632,20 +675,6 @@ int api_upload_file(char* endpoint, char* path, char** out, int* out_size)
         script_log(line);
     }
     return status;
-}
-
-int json_string_field(struct JSON* root, char* key, char* dst, int size)
-{
-    struct JSON* field;
-    char* value;
-    if (!json_object_contains(root, key)) return 0;
-    field = json_object_element(root, key);
-    if (!json_is_string(field)) return 0;
-    value = json_get_string(field);
-    strncpy(dst, value, size - 1);
-    dst[size - 1] = '\0';
-    free(value);
-    return 1;
 }
 
 int server_test(void)
@@ -713,39 +742,53 @@ void show_server_info(void)
     free(out);
 }
 
-int verify_token(void)
+void cache_remote_games(int type, char* names, int count)
 {
-    char body[512];
-    char* out = NULL;
-    int n = 0;
-    int status;
-    char user[IDN];
-    sprintf(body, "{\"token\":\"%s\"}", active_token());
-    status = api_call("/getUserID", body, &out, &n);
-    if (status != 200 || out == NULL) {
-        if (out != NULL) free(out);
-        gui_message("The Citrahold token was rejected.");
-        return 0;
-    }
-    {
-        struct JSON* root = json_new();
-        json_parse(root, out);
-        user[0] = '\0';
-        if (!json_string_field(root, "userID", user, IDN)) {
-            json_delete(root);
-            free(out);
-            gui_message("The server returned an invalid token response.");
-            return 0;
+    int kept = 0;
+    int i;
+    int changed = 0;
+    if (type == 0) {
+        int old_count = g_remote_save_count;
+        if (count > MAXREMOTE) gui_message("The save Game ID cache is full; some IDs were not saved.");
+        for (i = 0; i < count && kept < MAXREMOTE; i++) {
+            char* game = &names[i * IDN];
+            if (game[0] != '\0' && valid_game_id(game)) {
+                if (kept >= old_count || strcmp(g_remote_save_game[kept], game) != 0) changed = 1;
+                kept = kept + 1;
+            }
         }
-        json_delete(root);
+        if (old_count != kept) changed = 1;
+        g_remote_save_count = 0;
+        for (i = 0; i < count && g_remote_save_count < MAXREMOTE; i++) {
+            char* game = &names[i * IDN];
+            if (game[0] != '\0' && valid_game_id(game)) {
+                strcpy(g_remote_save_game[g_remote_save_count], game);
+                g_remote_save_count = g_remote_save_count + 1;
+            }
+        }
     }
-    free(out);
-    {
-        char line[180];
-        sprintf(line, "Authenticated as %s", user);
-        gui_message(line);
+    else {
+        int old_count = g_remote_extdata_count;
+        if (count > MAXREMOTE) gui_message("The extdata Game ID cache is full; some IDs were not saved.");
+        for (i = 0; i < count && kept < MAXREMOTE; i++) {
+            char* game = &names[i * IDN];
+            if (game[0] != '\0' && valid_game_id(game)) {
+                if (kept >= old_count || strcmp(g_remote_extdata_game[kept], game) != 0) changed = 1;
+                kept = kept + 1;
+            }
+        }
+        if (old_count != kept) changed = 1;
+        g_remote_extdata_count = 0;
+        for (i = 0; i < count && g_remote_extdata_count < MAXREMOTE; i++) {
+            char* game = &names[i * IDN];
+            if (game[0] != '\0' && valid_game_id(game)) {
+                strcpy(g_remote_extdata_game[g_remote_extdata_count], game);
+                g_remote_extdata_count = g_remote_extdata_count + 1;
+            }
+        }
     }
-    return 1;
+    if (changed) state_write();
+    printf("Cached %d remote %s Game ID%s.\n", kept, type ? "extdata" : "save", kept == 1 ? "" : "s");
 }
 
 /*
@@ -821,55 +864,6 @@ int remote_has(char* names, int count, char* game)
     int i;
     for (i = 0; i < count; i++) if (strcmp(&names[i * IDN], game) == 0) return 1;
     return 0;
-}
-
-void cache_remote_games(int type, char* names, int count)
-{
-    int kept = 0;
-    int i;
-    int changed = 0;
-    if (type == 0) {
-        int old_count = g_remote_save_count;
-        if (count > MAXREMOTE) gui_message("The save Game ID cache is full; some IDs were not saved.");
-        for (i = 0; i < count && kept < MAXREMOTE; i++) {
-            char* game = &names[i * IDN];
-            if (game[0] != '\0' && valid_game_id(game)) {
-                if (kept >= old_count || strcmp(g_remote_save_game[kept], game) != 0) changed = 1;
-                kept = kept + 1;
-            }
-        }
-        if (old_count != kept) changed = 1;
-        g_remote_save_count = 0;
-        for (i = 0; i < count && g_remote_save_count < MAXREMOTE; i++) {
-            char* game = &names[i * IDN];
-            if (game[0] != '\0' && valid_game_id(game)) {
-                strcpy(g_remote_save_game[g_remote_save_count], game);
-                g_remote_save_count = g_remote_save_count + 1;
-            }
-        }
-    }
-    else {
-        int old_count = g_remote_extdata_count;
-        if (count > MAXREMOTE) gui_message("The extdata Game ID cache is full; some IDs were not saved.");
-        for (i = 0; i < count && kept < MAXREMOTE; i++) {
-            char* game = &names[i * IDN];
-            if (game[0] != '\0' && valid_game_id(game)) {
-                if (kept >= old_count || strcmp(g_remote_extdata_game[kept], game) != 0) changed = 1;
-                kept = kept + 1;
-            }
-        }
-        if (old_count != kept) changed = 1;
-        g_remote_extdata_count = 0;
-        for (i = 0; i < count && g_remote_extdata_count < MAXREMOTE; i++) {
-            char* game = &names[i * IDN];
-            if (game[0] != '\0' && valid_game_id(game)) {
-                strcpy(g_remote_extdata_game[g_remote_extdata_count], game);
-                g_remote_extdata_count = g_remote_extdata_count + 1;
-            }
-        }
-    }
-    if (changed) state_write();
-    printf("Cached %d remote %s Game ID%s.\n", kept, type ? "extdata" : "save", kept == 1 ? "" : "s");
 }
 
 int remote_timestamp(int type, char* game, char* result, int size)
@@ -1004,6 +998,14 @@ int write_base64_file(FILE* out, char* path)
     return 1;
 }
 
+int is_regular_file(char* path)
+{
+    FILE* f = fopen(path, "rb");
+    if (f == NULL) return 0;
+    fclose(f);
+    return 1;
+}
+
 int measure_upload_tree(char* root, int* total)
 {
     struct directory* d;
@@ -1072,14 +1074,6 @@ void relative_path(char* full, char* base, char* out, int size)
         strncpy(out, full, size - 1);
     }
     out[size - 1] = '\0';
-}
-
-int is_regular_file(char* path)
-{
-    FILE* f = fopen(path, "rb");
-    if (f == NULL) return 0;
-    fclose(f);
-    return 1;
 }
 
 void parent_path(char* path, char* out, int size)
