@@ -44,6 +44,7 @@
 #define ROWN 256
 
 #define OFFICIAL_URL "https://api.citrahold.com"
+#define SCRIPT_VERSION "first-run-token-verify"
 
 char g_root[ROOTN];
 char g_config_dir[PATHN];
@@ -507,9 +508,14 @@ int configure_first_run(void)
             return 0;
         }
         root = json_new();
+        if (root == NULL) {
+            free(out);
+            gui_message("Could not allocate the token response.");
+            return 0;
+        }
         json_parse(root, out);
         exchanged[0] = '\0';
-        if (!json_string_field(root, "token", exchanged, TOKENN)) {
+        if (!json_is_valid(root) || !json_is_object(root) || !json_string_field(root, "token", exchanged, TOKENN)) {
             json_delete(root);
             free(out);
             gui_message("The server returned an invalid token response.");
@@ -521,6 +527,11 @@ int configure_first_run(void)
     }
     if (strcmp(g_mode, "official") == 0) strcpy(g_official_token, token);
     else strcpy(g_custom_token, token);
+    if (!verify_token()) {
+        if (strcmp(g_mode, "official") == 0) g_official_token[0] = '\0';
+        else g_custom_token[0] = '\0';
+        return 0;
+    }
     if (gui_confirm("Add a passphrase to the encrypted state?")) {
         gui_keyboard(g_pass, "Enter passphrase", PASSN);
         if (g_pass[0] == '\0') return 0;
@@ -1884,6 +1895,7 @@ int main(int argc, char** argv)
     char* options[4];
     int choice;
     int loaded;
+    printf("Citrahold script revision: %s\n", SCRIPT_VERSION);
     init_paths();
     loaded = state_read();
     if (loaded == 0) {
