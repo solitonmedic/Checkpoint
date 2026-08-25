@@ -45,7 +45,7 @@
 #define ROWN 256
 
 #define OFFICIAL_URL "https://api.citrahold.com"
-#define SCRIPT_VERSION "separate-remote-caches"
+#define SCRIPT_VERSION "ordinary-milestone-logging"
 
 char g_root[ROOTN];
 char g_config_dir[PATHN];
@@ -94,8 +94,8 @@ void log_debug(char* message)
             fputc('\n', f);
             fclose(f);
         }
-        script_log(message);
     }
+    script_log(message);
 }
 
 void init_paths(void)
@@ -586,7 +586,7 @@ int api_call(char* endpoint, char* body, char** out, int* out_size)
     strcpy(headers, "Content-Type: application/json");
     status = web_request("POST", url, headers, body, strlen(body), out, out_size, &response_headers);
     if (response_headers != NULL) free(response_headers);
-    if (g_debug) {
+    {
         char line[96];
         sprintf(line, "HTTP %d %s", status, endpoint);
         script_log(line);
@@ -608,7 +608,7 @@ int api_call_headers(char* endpoint, char* extra_headers, char* body, char** out
         strcat(headers, extra_headers);
     }
     status = web_request("POST", url, headers, body, strlen(body), out, out_size, response_headers);
-    if (g_debug) {
+    {
         char line[96];
         sprintf(line, "HTTP %d %s", status, endpoint);
         script_log(line);
@@ -626,7 +626,7 @@ int api_upload_file(char* endpoint, char* path, char** out, int* out_size)
     strcpy(headers, "Content-Type: application/json");
     status = web_upload_file("POST", url, headers, path, out, out_size, &response_headers);
     if (response_headers != NULL) free(response_headers);
-    if (g_debug) {
+    {
         char line[96];
         sprintf(line, "HTTP %d %s", status, endpoint);
         script_log(line);
