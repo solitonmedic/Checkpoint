@@ -30,10 +30,10 @@
 #include <string>
 
 // The single HTTP transfer of the script engine: a request value in, a response
-// value out. web_get, web_request, web_upload_file and url_encode are argument
-// marshalling on top of it, so the option set cannot drift between them and the
-// abort seam, the progress bar and the allocation-safe write callback are stated
-// once.
+// value out. web_get, web_request, web_upload_file, web_upload_file_once and
+// url_encode are argument marshalling on top of it, so the option set cannot
+// drift between them and the abort seam, the progress bar and the allocation-safe
+// write callback are stated once.
 //
 // Runs on the script worker thread only: the transfer polls
 // ckpt_script_abort_requested() from curl's progress callback (the per-statement

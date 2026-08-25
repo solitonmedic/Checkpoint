@@ -24,14 +24,12 @@
 #include <string.h>
 #include <unistd.h>
 
-#define ROOTN 512
 #define URLN 512
 #define TOKENN 96
 #define PASSN 64
 #define BODYN 24000
 #define DOWNLOAD_RESPONSE_LIMIT 65536
 #define DOWNLOAD_CHUNK 524288
-#define FILE_LIMIT 4096
 #define B64_CHUNK 1536
 #define UPLOAD_ERR_READ 1
 #define UPLOAD_ERR_TEMP 2
@@ -43,9 +41,10 @@
 #define MAXPICK 64
 #define STATE_TEXT_LIMIT 16384
 #define ROWN 256
+#define CONFIRMN (PATHN + IDN + 256)
 
 #define OFFICIAL_URL "https://api.citrahold.com"
-#define SCRIPT_VERSION "first-run-status"
+#define SCRIPT_VERSION "review-cleanup"
 
 struct mapping {
     int type;
@@ -53,7 +52,11 @@ struct mapping {
     char game[IDN];
 };
 
-char g_root[ROOTN];
+struct remote_cache {
+    char games[MAXREMOTE][IDN];
+    int count;
+};
+
 char g_config_dir[PATHN];
 char g_vault[PATHN];
 char g_log_dir[PATHN];
@@ -68,10 +71,8 @@ int g_debug;
 
 struct mapping g_maps[MAXMAP];
 int g_map_count;
-char g_remote_save_game[MAXREMOTE][IDN];
-int g_remote_save_count;
-char g_remote_extdata_game[MAXREMOTE][IDN];
-int g_remote_extdata_count;
+struct remote_cache g_remote_save;
+struct remote_cache g_remote_extdata;
 
 char g_upload_payload[PATHN];
 char g_vault_tmp[PATHN];
@@ -79,6 +80,12 @@ char g_vault_old[PATHN];
 int g_upload_error;
 int g_upload_total;
 int g_upload_done;
+
+struct remote_cache* remote_cache_for_type(int type)
+{
+    if (type == 0) return &g_remote_save;
+    return &g_remote_extdata;
+}
 
 void log_debug(char* message)
 {
@@ -98,14 +105,13 @@ void log_debug(char* message)
 void init_paths(void)
 {
     char* root = app_root();
-    strcpy(g_root, root);
-    sprintf(g_config_dir, "%s/config", root);
-    sprintf(g_vault, "%s/config/citrahold.vault", root);
-    sprintf(g_log_dir, "%s/logs/citrahold", root);
-    sprintf(g_log_path, "%s/logs/citrahold/citrahold.log", root);
-    sprintf(g_upload_payload, "%s/config/citrahold-upload-payload.json", root);
-    sprintf(g_vault_tmp, "%s/config/citrahold.vault.tmp", root);
-    sprintf(g_vault_old, "%s/config/citrahold.vault.old", root);
+    snprintf(g_config_dir, PATHN, "%s/config", root);
+    snprintf(g_vault, PATHN, "%s/config/citrahold.vault", root);
+    snprintf(g_log_dir, PATHN, "%s/logs/citrahold", root);
+    snprintf(g_log_path, PATHN, "%s/logs/citrahold/citrahold.log", root);
+    snprintf(g_upload_payload, PATHN, "%s/config/citrahold-upload-payload.json", root);
+    snprintf(g_vault_tmp, PATHN, "%s/config/citrahold.vault.tmp", root);
+    snprintf(g_vault_old, PATHN, "%s/config/citrahold.vault.old", root);
     sd_mkdirs(g_log_dir);
     free(root);
     /* A power loss can leave the streamed request body behind. Never retain it. */
@@ -122,8 +128,8 @@ void init_paths(void)
     g_delete_after = 0;
     g_debug = 0;
     g_map_count = 0;
-    g_remote_save_count = 0;
-    g_remote_extdata_count = 0;
+    g_remote_save.count = 0;
+    g_remote_extdata.count = 0;
 }
 
 char* slurp_n(char* path, int* size)
@@ -200,7 +206,7 @@ int line_value(char* text, char* key, char* out, int outn)
     int i;
     while (p != NULL && p[0] != '\0') {
         if (strncmp(p, key, keyn) == 0 && p[keyn] == '=') {
-            p = p + keyn + 1;
+            p = &p[keyn + 1];
             i = 0;
             while (p[i] != '\0' && p[i] != '\n' && i < outn - 1) {
                 out[i] = p[i];
@@ -210,7 +216,7 @@ int line_value(char* text, char* key, char* out, int outn)
             return 1;
         }
         p = strchr(p, '\n');
-        if (p != NULL) p = p + 1;
+        if (p != NULL) p = &p[1];
     }
     out[0] = '\0';
     return 0;
@@ -249,7 +255,7 @@ void parse_maps(char* text)
             }
         }
         p = strchr(p, '\n');
-        if (p != NULL) p = p + 1;
+        if (p != NULL) p = &p[1];
     }
 }
 
@@ -259,10 +265,11 @@ void parse_remote_games(char* text)
     char line[PATHN];
     char* a;
     char* b;
+    struct remote_cache* cache;
     int n;
 
-    g_remote_save_count = 0;
-    g_remote_extdata_count = 0;
+    g_remote_save.count = 0;
+    g_remote_extdata.count = 0;
     while (p != NULL) {
         p = strstr(p, "remote=");
         if (p == NULL) break;
@@ -276,22 +283,20 @@ void parse_remote_games(char* text)
         b = strtok(NULL, "|");
         if (a != NULL && b != NULL) {
             if (strcmp(a, "remote=save") == 0) {
-                if (g_remote_save_count < MAXREMOTE) {
-                    strncpy(g_remote_save_game[g_remote_save_count], b, IDN - 1);
-                    g_remote_save_game[g_remote_save_count][IDN - 1] = '\0';
-                    g_remote_save_count = g_remote_save_count + 1;
-                }
+                cache = remote_cache_for_type(0);
             }
             else if (strcmp(a, "remote=extdata") == 0) {
-                if (g_remote_extdata_count < MAXREMOTE) {
-                    strncpy(g_remote_extdata_game[g_remote_extdata_count], b, IDN - 1);
-                    g_remote_extdata_game[g_remote_extdata_count][IDN - 1] = '\0';
-                    g_remote_extdata_count = g_remote_extdata_count + 1;
-                }
+                cache = remote_cache_for_type(1);
+            }
+            else cache = NULL;
+            if (cache != NULL && cache->count < MAXREMOTE) {
+                strncpy(cache->games[cache->count], b, IDN - 1);
+                cache->games[cache->count][IDN - 1] = '\0';
+                cache->count = cache->count + 1;
             }
         }
         p = strchr(p, '\n');
-        if (p != NULL) p = p + 1;
+        if (p != NULL) p = &p[1];
     }
 }
 
@@ -325,12 +330,12 @@ int state_to_plain(char* plain, int limit)
         sprintf(line, "map=%s|%s|%s\n", g_maps[i].type ? "extdata" : "save", g_maps[i].title, g_maps[i].game);
         if (!append_text(plain, line, limit)) return 0;
     }
-    for (i = 0; i < g_remote_save_count; i++) {
-        sprintf(line, "remote=save|%s\n", g_remote_save_game[i]);
+    for (i = 0; i < g_remote_save.count; i++) {
+        sprintf(line, "remote=save|%s\n", g_remote_save.games[i]);
         if (!append_text(plain, line, limit)) return 0;
     }
-    for (i = 0; i < g_remote_extdata_count; i++) {
-        sprintf(line, "remote=extdata|%s\n", g_remote_extdata_game[i]);
+    for (i = 0; i < g_remote_extdata.count; i++) {
+        sprintf(line, "remote=extdata|%s\n", g_remote_extdata.games[i]);
         if (!append_text(plain, line, limit)) return 0;
     }
     return 1;
@@ -422,6 +427,7 @@ int state_write(void)
     return 1;
 }
 
+/* Returns 1 when loaded, 0 when absent, -1 on failure, and -2 on cancellation. */
 int state_read(void)
 {
     char* blob;
@@ -443,7 +449,7 @@ int state_read(void)
         gui_keyboard(g_pass, "Enter Citrahold passphrase", PASSN);
         if (g_pass[0] == '\0') {
             free(blob);
-            return -1;
+            return -2;
         }
     }
     rc = device_unseal(blob, blob_size, g_pass, &plain, &plain_size);
@@ -494,6 +500,22 @@ int valid_game_id(char* game)
     return 1;
 }
 
+int valid_backup_name(char* name)
+{
+    int i = 0;
+    int length = strlen(name);
+    if (length <= 0 || length >= IDN) return 0;
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) return 0;
+    if (name[0] == ' ' || name[length - 1] == ' ' || name[length - 1] == '.') return 0;
+    while (name[i] != '\0') {
+        char c = name[i];
+        if ((unsigned char)c < 32 || c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') return 0;
+        if (c == '.' && name[i + 1] == '.') return 0;
+        i = i + 1;
+    }
+    return 1;
+}
+
 char* active_token(void)
 {
     if (strcmp(g_mode, "official") == 0) return g_official_token;
@@ -506,7 +528,7 @@ char* active_url(void)
     return g_url;
 }
 
-void api_request_setup(char* endpoint, char* url, int url_size, char* headers, int headers_size)
+void api_request_setup(char* endpoint, char* url, int url_size, char* headers)
 {
     snprintf(url, url_size, "%s%s", active_url(), endpoint);
     strcpy(headers, "Content-Type: application/json");
@@ -533,7 +555,7 @@ int api_call(char* endpoint, char* body, char** out, int* out_size)
     char headers[128];
     char* response_headers = NULL;
     int status;
-    api_request_setup(endpoint, url, URLN, headers, 128);
+    api_request_setup(endpoint, url, URLN, headers);
     status = web_request("POST", url, headers, body, strlen(body), out, out_size, &response_headers);
     if (response_headers != NULL) free(response_headers);
     api_request_log(endpoint, status);
@@ -561,6 +583,7 @@ int verify_token(void)
     int n = 0;
     int status;
     char user[IDN];
+    gui_status("Verifying Citrahold token...");
     sprintf(body, "{\"token\":\"%s\"}", active_token());
     status = api_call("/getUserID", body, &out, &n);
     if (status != 200 || out == NULL) {
@@ -606,6 +629,7 @@ int configure_first_run(void)
         char exchanged[TOKENN];
         sprintf(url, "%s/getToken", active_url());
         sprintf(body, "{\"shorthandToken\":\"%s\"}", token);
+        gui_status("Exchanging Citrahold token...");
         status = web_request("POST", url, "Content-Type: application/json", body, strlen(body), &out, &out_size, NULL);
         if (status != 200 || out == NULL) {
             if (out != NULL) free(out);
@@ -637,7 +661,7 @@ int configure_first_run(void)
         else g_custom_token[0] = '\0';
         return -1;
     }
-    if (gui_confirm("Add a passphrase to the encrypted state?")) {
+    if (gui_confirm("Add a passphrase? Without one, same-console homebrew can derive the vault key.")) {
         gui_keyboard(g_pass, "Enter passphrase", PASSN);
         if (g_pass[0] == '\0') return 0;
     }
@@ -651,7 +675,7 @@ int api_call_headers(char* endpoint, char* extra_headers, char* body, char** out
     char url[URLN];
     char headers[256];
     int status;
-    api_request_setup(endpoint, url, URLN, headers, 256);
+    api_request_setup(endpoint, url, URLN, headers);
     api_request_add_headers(headers, extra_headers, 256);
     status = web_request("POST", url, headers, body, strlen(body), out, out_size, response_headers);
     api_request_log(endpoint, status);
@@ -664,8 +688,8 @@ int api_upload_file(char* endpoint, char* path, char** out, int* out_size)
     char headers[128];
     char* response_headers = NULL;
     int status;
-    api_request_setup(endpoint, url, URLN, headers, 128);
-    status = web_upload_file("POST", url, headers, path, out, out_size, &response_headers);
+    api_request_setup(endpoint, url, URLN, headers);
+    status = web_upload_file_once("POST", url, headers, path, out, out_size, &response_headers);
     if (response_headers != NULL) free(response_headers);
     api_request_log(endpoint, status);
     return status;
@@ -676,6 +700,7 @@ int server_test(void)
     char* out = NULL;
     int n = 0;
     int status;
+    gui_status("Testing Citrahold server...");
     status = api_call("/areyouawake", "{}", &out, &n);
     if (out != NULL) free(out);
     if (status == 200) {
@@ -697,6 +722,7 @@ void show_server_info(void)
     struct JSON* item;
     char* text;
 
+    gui_status("Reading Citrahold server info...");
     printf("Citrahold server: %s\n", active_url());
     log_debug("starting server information query");
     status = api_call("/softwareVersion", "{}", &out, &n);
@@ -738,47 +764,28 @@ void show_server_info(void)
 
 void cache_remote_games(int type, char* names, int count)
 {
+    struct remote_cache* cache = remote_cache_for_type(type);
+    int old_count = cache->count;
     int kept = 0;
     int i;
     int changed = 0;
-    if (type == 0) {
-        int old_count = g_remote_save_count;
-        if (count > MAXREMOTE) gui_message("The save Game ID cache is full; some IDs were not saved.");
-        for (i = 0; i < count && kept < MAXREMOTE; i++) {
-            char* game = &names[i * IDN];
-            if (game[0] != '\0' && valid_game_id(game)) {
-                if (kept >= old_count || strcmp(g_remote_save_game[kept], game) != 0) changed = 1;
-                kept = kept + 1;
-            }
-        }
-        if (old_count != kept) changed = 1;
-        g_remote_save_count = 0;
-        for (i = 0; i < count && g_remote_save_count < MAXREMOTE; i++) {
-            char* game = &names[i * IDN];
-            if (game[0] != '\0' && valid_game_id(game)) {
-                strcpy(g_remote_save_game[g_remote_save_count], game);
-                g_remote_save_count = g_remote_save_count + 1;
-            }
+    if (count > MAXREMOTE) {
+        gui_message(type ? "The extdata Game ID cache is full; some IDs were not saved." : "The save Game ID cache is full; some IDs were not saved.");
+    }
+    for (i = 0; i < count && kept < MAXREMOTE; i++) {
+        char* game = &names[i * IDN];
+        if (game[0] != '\0' && valid_game_id(game)) {
+            if (kept >= old_count || strcmp(cache->games[kept], game) != 0) changed = 1;
+            kept = kept + 1;
         }
     }
-    else {
-        int old_count = g_remote_extdata_count;
-        if (count > MAXREMOTE) gui_message("The extdata Game ID cache is full; some IDs were not saved.");
-        for (i = 0; i < count && kept < MAXREMOTE; i++) {
-            char* game = &names[i * IDN];
-            if (game[0] != '\0' && valid_game_id(game)) {
-                if (kept >= old_count || strcmp(g_remote_extdata_game[kept], game) != 0) changed = 1;
-                kept = kept + 1;
-            }
-        }
-        if (old_count != kept) changed = 1;
-        g_remote_extdata_count = 0;
-        for (i = 0; i < count && g_remote_extdata_count < MAXREMOTE; i++) {
-            char* game = &names[i * IDN];
-            if (game[0] != '\0' && valid_game_id(game)) {
-                strcpy(g_remote_extdata_game[g_remote_extdata_count], game);
-                g_remote_extdata_count = g_remote_extdata_count + 1;
-            }
+    if (old_count != kept) changed = 1;
+    cache->count = 0;
+    for (i = 0; i < count && cache->count < MAXREMOTE; i++) {
+        char* game = &names[i * IDN];
+        if (game[0] != '\0' && valid_game_id(game)) {
+            strcpy(cache->games[cache->count], game);
+            cache->count = cache->count + 1;
         }
     }
     if (changed) state_write();
@@ -803,6 +810,7 @@ int remote_games(int type, char* names)
     struct JSON* item;
     char endpoint[32];
 
+    gui_status("Reading Citrahold Game IDs...");
     sprintf(body, "{\"token\":\"%s\"}", active_token());
     strcpy(endpoint, type ? "/getExtdata" : "/getSaves");
     log_debug("requesting remote game list");
@@ -869,6 +877,7 @@ int remote_timestamp(int type, char* game, char* result, int size)
     struct JSON* root;
     char endpoint[48];
     result[0] = '\0';
+    gui_status("Reading remote backup time...");
     sprintf(body, "{\"token\":\"%s\",\"game\":\"%s\"}", active_token(), game);
     strcpy(endpoint, type ? "/getExtdataLastUpdated" : "/getSavesLastUpdated");
     status = api_call(endpoint, body, &out, &n);
@@ -886,16 +895,6 @@ int remote_timestamp(int type, char* game, char* result, int size)
     json_delete(root);
     free(out);
     return 1;
-}
-
-int base64_value(char c)
-{
-    if (c >= 'A' && c <= 'Z') return c - 'A';
-    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-    if (c >= '0' && c <= '9') return c - '0' + 52;
-    if (c == '+') return 62;
-    if (c == '/') return 63;
-    return -1;
 }
 
 int write_text(FILE* out, char* text)
@@ -1112,9 +1111,14 @@ int write_tree(FILE* out, char* root, char* base, char* game, int* entries)
     char remote[PATHN];
     char child[PATHN];
     char marker[PATHN];
+    int formatted;
     if (is_regular_file(root)) {
         relative_path(root, base, rel, PATHN);
-        sprintf(remote, "%s/%s", game, rel);
+        formatted = snprintf(remote, PATHN, "%s/%s", game, rel);
+        if (formatted < 0 || formatted >= PATHN) {
+            g_upload_error = UPLOAD_ERR_READ;
+            return 0;
+        }
         if (*entries > 0 && !write_text(out, ",")) return 0;
         if (!write_upload_entry(out, remote, root, 0)) return 0;
         *entries = *entries + 1;
@@ -1128,8 +1132,18 @@ int write_tree(FILE* out, char* root, char* base, char* game, int* entries)
     }
     if (strcmp(root, base) != 0) {
         relative_path(root, base, rel, PATHN);
-        sprintf(marker, "%s/citraholdDirectoryDummy", rel);
-        sprintf(remote, "%s/%s", game, marker);
+        formatted = snprintf(marker, PATHN, "%s/citraholdDirectoryDummy", rel);
+        if (formatted < 0 || formatted >= PATHN) {
+            delete_directory(d);
+            g_upload_error = UPLOAD_ERR_READ;
+            return 0;
+        }
+        formatted = snprintf(remote, PATHN, "%s/%s", game, marker);
+        if (formatted < 0 || formatted >= PATHN) {
+            delete_directory(d);
+            g_upload_error = UPLOAD_ERR_READ;
+            return 0;
+        }
         if (*entries > 0 && !write_text(out, ",")) {
             delete_directory(d);
             return 0;
@@ -1158,7 +1172,11 @@ int write_upload_payload(char* backup, char* game)
     int entries = 0;
     g_upload_total = 0;
     g_upload_done = 0;
-    if (!measure_upload_tree(backup, &g_upload_total)) return 0;
+    progress_begin(0, "Scanning backup", 0);
+    if (!measure_upload_tree(backup, &g_upload_total)) {
+        progress_end(0);
+        return 0;
+    }
     progress_begin(0, "Preparing upload payload", g_upload_total > 0 ? g_upload_total : 1);
     unlink(g_upload_payload);
     out = fopen(g_upload_payload, "wb");
@@ -1252,26 +1270,17 @@ void assignment_row(int type, char* game, char* row, int size)
 
 int choose_remote_game(int type, char* game)
 {
+    struct remote_cache* cache = remote_cache_for_type(type);
     char* rows[MAXREMOTE + 1];
     int indexes[MAXREMOTE];
     int count = 0;
     int i;
     int pick;
-    if (type == 0) {
-        for (i = 0; i < g_remote_save_count; i++) {
-            rows[count] = malloc(IDN + 64);
-            assignment_row(type, g_remote_save_game[i], rows[count], IDN + 64);
-            indexes[count] = i;
-            count = count + 1;
-        }
-    }
-    else {
-        for (i = 0; i < g_remote_extdata_count; i++) {
-            rows[count] = malloc(IDN + 64);
-            assignment_row(type, g_remote_extdata_game[i], rows[count], IDN + 64);
-            indexes[count] = i;
-            count = count + 1;
-        }
+    for (i = 0; i < cache->count; i++) {
+        rows[count] = malloc(IDN + 64);
+        assignment_row(type, cache->games[i], rows[count], IDN + 64);
+        indexes[count] = i;
+        count = count + 1;
     }
     rows[count] = "Enter a Game ID manually";
     pick = gui_pick_one(type ? "Select extdata Game ID" : "Select save Game ID", rows, count + 1);
@@ -1281,8 +1290,7 @@ int choose_remote_game(int type, char* game)
         gui_keyboard(game, "Enter Citrahold Game ID", IDN);
         return valid_game_id(game);
     }
-    if (type == 0) strcpy(game, g_remote_save_game[indexes[pick]]);
-    else strcpy(game, g_remote_extdata_game[indexes[pick]]);
+    strcpy(game, cache->games[indexes[pick]]);
     return 1;
 }
 
@@ -1418,6 +1426,13 @@ int choose_backup(int idx, int type, char* path, int size)
     return pick >= 0;
 }
 
+void log_transfer_result(int type, char* direction, char* result)
+{
+    char line[128];
+    snprintf(line, 128, "Citrahold %s %s %s.", type ? "extdata" : "save", direction, result);
+    script_log(line);
+}
+
 int upload_flow(int type)
 {
     int map = choose_mapping(type);
@@ -1434,12 +1449,19 @@ int upload_flow(int type)
     log_debug(type ? "starting extdata upload" : "starting save upload");
     if (map < 0) {
         printf("No mapping selected; returning to the Citrahold menu.\n");
+        log_transfer_result(type, "upload", "cancelled");
         return 0;
     }
     idx = title_find(g_maps[map].title);
-    if (idx < 0) return 0;
+    if (idx < 0) {
+        log_transfer_result(type, "upload", "failed: mapped title is unavailable");
+        return 0;
+    }
     log_debug("upload title selected");
-    if (!choose_backup(idx, type, backup, PATHN)) return 0;
+    if (!choose_backup(idx, type, backup, PATHN)) {
+        log_transfer_result(type, "upload", "cancelled");
+        return 0;
+    }
     log_debug("upload backup selected");
     remote_count = remote_games(type, names);
     if (remote_count < 0) {
@@ -1455,31 +1477,44 @@ int upload_flow(int type)
     else {
         sprintf(confirm, "Upload backup for Game ID:\n%s\n\nRemote copy: %s\nRemote time: %s\n\nContinue?", g_maps[map].game, remote_has(names, remote_count, g_maps[map].game) ? "exists and will be replaced" : "not present", remote_time[0] == '\0' ? "unknown" : remote_time);
     }
-    if (!gui_confirm(confirm)) return 0;
+    if (!gui_confirm(confirm)) {
+        log_transfer_result(type, "upload", "cancelled");
+        return 0;
+    }
     log_debug("preparing upload payload");
     g_upload_error = 0;
     if (!write_upload_payload(backup, g_maps[map].game)) {
         printf("Upload payload preparation failed.\n");
         if (g_upload_error == UPLOAD_ERR_READ) gui_message("A backup file or folder\ncould not be read.");
         else gui_message("Could not create the\ntemporary upload payload.");
+        log_transfer_result(type, "upload", "failed during payload preparation");
         return 0;
     }
     log_debug("upload payload prepared");
     gui_status("Uploading Citrahold backup...");
     log_debug("sending upload request");
     status = api_upload_file(type ? "/uploadMultiExtdata" : "/uploadMultiSaves", g_upload_payload, &out, &out_size);
-    unlink(g_upload_payload);
     if (out != NULL) free(out);
     printf("Upload response: HTTP %d\n", status);
+    if (status == -4) {
+        gui_message("The upload ended, but Checkpoint could not remove the plaintext payload.");
+        log_transfer_result(type, "upload", "failed: plaintext cleanup failed");
+        return 0;
+    }
     if (status != 200 && status != 201) {
         gui_message("Citrahold rejected the upload.");
+        log_transfer_result(type, "upload", "failed");
         return 0;
     }
     snprintf(confirm, PATHN + 128, "Upload succeeded. Delete this local Checkpoint backup?\n%s", backup);
     if (g_delete_after && gui_confirm(confirm)) {
-        if (!remove_tree(backup)) gui_message("Upload succeeded, but the local backup could not be deleted.");
+        if (!remove_tree(backup)) {
+            gui_message("Upload succeeded, but the local backup could not be deleted.");
+            script_log("Citrahold upload succeeded, but local backup deletion failed.");
+        }
     }
     gui_message("Citrahold upload completed.");
+    log_transfer_result(type, "upload", "completed");
     return 1;
 }
 
@@ -1504,17 +1539,17 @@ int parse_content_range(char* headers, int* start, int* end, int* total)
     if (value == NULL) return 0;
     if (strncmp(value, "bytes ", 6) != 0) valid = 0;
     if (valid) {
-        cursor = value + 6;
+        cursor = &value[6];
         parsed_start = strtol(cursor, &stop, 10);
         if (stop == cursor || parsed_start < 0 || *stop != '-') valid = 0;
     }
     if (valid) {
-        cursor = stop + 1;
+        cursor = &stop[1];
         parsed_end = strtol(cursor, &stop, 10);
         if (stop == cursor || parsed_end < parsed_start || *stop != '/') valid = 0;
     }
     if (valid) {
-        cursor = stop + 1;
+        cursor = &stop[1];
         parsed_total = strtol(cursor, &stop, 10);
         if (stop == cursor || parsed_total <= parsed_end || *stop != '\0') valid = 0;
     }
@@ -1547,7 +1582,7 @@ int write_download_chunk(char* path, char* data, int bytes, int append)
     f = fopen(path, append ? "ab" : "wb");
     if (f == NULL) return 0;
     wrote = fwrite(data, 1, bytes, f);
-    fclose(f);
+    if (fclose(f) != 0) return 0;
     return wrote == bytes;
 }
 
@@ -1640,49 +1675,96 @@ int download_flow(int type)
     int count;
     char* key;
     char path[PATHN];
-    char confirm[512];
+    char confirm[CONFIRMN];
+    int stale;
+    int formatted;
 
     printf("Starting %s download...\n", type ? "extdata" : "save");
     log_debug(type ? "starting extdata download" : "starting save download");
     if (map < 0) {
         printf("No mapping selected; returning to the Citrahold menu.\n");
+        log_transfer_result(type, "download", "cancelled");
         return 0;
     }
     idx = title_find(g_maps[map].title);
-    if (idx < 0) return 0;
+    if (idx < 0) {
+        log_transfer_result(type, "download", "failed: mapped title is unavailable");
+        return 0;
+    }
     {
         char names[MAXPICK * IDN];
         int count_remote = remote_games(type, names);
         if (count_remote < 0 || !remote_has(names, count_remote, g_maps[map].game)) {
             gui_message("That Game ID is not present on the server.");
+            log_transfer_result(type, "download", "failed: remote Game ID unavailable");
             return 0;
         }
     }
     gui_keyboard(backup_name, "New Checkpoint backup name", IDN);
-    if (backup_name[0] == '\0') return 0;
+    if (backup_name[0] == '\0') {
+        log_transfer_result(type, "download", "cancelled");
+        return 0;
+    }
+    if (!valid_backup_name(backup_name)) {
+        gui_message("Use one safe backup name without slashes, '..', control characters, or FAT-invalid punctuation.");
+        script_log("Citrahold download rejected an unsafe local backup name.");
+        return 0;
+    }
     base = title_backup_path(idx, type);
-    sprintf(temp, "%s%s.citrahold-partial", base, backup_name);
-    sprintf(final_path, "%s%s", base, backup_name);
-    if (sd_exists(temp)) {
-        if (!remove_tree(temp)) {
-            free(base);
-            gui_message("Could not remove the stale temporary download folder.");
-            return 0;
-        }
+    if (base[0] == '\0') {
+        free(base);
+        gui_message("Checkpoint has no backup folder for that title and data type.");
+        script_log("Citrahold download failed: no local backup folder.");
+        return 0;
+    }
+    formatted = snprintf(temp, PATHN, "%s%s.citrahold-partial", base, backup_name);
+    if (formatted < 0 || formatted >= PATHN) {
+        free(base);
+        gui_message("The temporary backup path is too long.");
+        script_log("Citrahold download failed: temporary path too long.");
+        return 0;
+    }
+    formatted = snprintf(final_path, PATHN, "%s%s", base, backup_name);
+    if (formatted < 0 || formatted >= PATHN) {
+        free(base);
+        gui_message("The final backup path is too long.");
+        script_log("Citrahold download failed: final path too long.");
+        return 0;
     }
     if (sd_exists(final_path)) {
         free(base);
         gui_message("That Checkpoint backup name already exists.");
+        log_transfer_result(type, "download", "failed: backup name already exists");
         return 0;
     }
-    sprintf(confirm, "Download Game ID:\n%s\ninto:\n%s\n\nContinue?", g_maps[map].game, temp);
+    stale = sd_exists(temp);
+    if (stale) {
+        formatted = snprintf(confirm, CONFIRMN, "Download Game ID:\n%s\ninto:\n%s\n\nA stale partial folder at that path will be deleted first. Continue?", g_maps[map].game, temp);
+    }
+    else {
+        formatted = snprintf(confirm, CONFIRMN, "Download Game ID:\n%s\ninto:\n%s\n\nContinue?", g_maps[map].game, temp);
+    }
+    if (formatted < 0 || formatted >= CONFIRMN) {
+        free(base);
+        gui_message("The download confirmation is too long.");
+        script_log("Citrahold download failed: confirmation path too long.");
+        return 0;
+    }
     if (!gui_confirm(confirm)) {
         free(base);
+        log_transfer_result(type, "download", "cancelled");
+        return 0;
+    }
+    if (stale && !remove_tree(temp)) {
+        free(base);
+        gui_message("Could not remove the stale temporary download folder.");
+        script_log("Citrahold download failed: stale partial cleanup failed.");
         return 0;
     }
     if (sd_mkdirs(temp) != 0) {
         free(base);
         gui_message("Could not create the temporary backup folder.");
+        log_transfer_result(type, "download", "failed: temporary folder creation failed");
         return 0;
     }
 
@@ -1690,6 +1772,7 @@ int download_flow(int type)
         remove_tree(temp);
         free(base);
         gui_message("Could not prepare the download request.");
+        log_transfer_result(type, "download", "failed: request preparation failed");
         return 0;
     }
     gui_status("Receiving Citrahold backup...");
@@ -1702,6 +1785,7 @@ int download_flow(int type)
         free(base);
         printf("Download file list failed: HTTP %d, %d bytes.\n", status, out_size);
         gui_message("Citrahold download failed.");
+        log_transfer_result(type, "download", "failed while listing files");
         return 0;
     }
     root = json_new();
@@ -1710,6 +1794,7 @@ int download_flow(int type)
         remove_tree(temp);
         free(base);
         gui_message("Could not allocate the download response.");
+        log_transfer_result(type, "download", "failed: response allocation failed");
         return 0;
     }
     json_parse(root, out);
@@ -1719,6 +1804,7 @@ int download_flow(int type)
         remove_tree(temp);
         free(base);
         gui_message("The server returned no files.");
+        log_transfer_result(type, "download", "failed: invalid file-list response");
         return 0;
     }
     files = json_object_element(root, "files");
@@ -1727,6 +1813,7 @@ int download_flow(int type)
         remove_tree(temp);
         free(base);
         gui_message("The server returned an invalid file list.");
+        log_transfer_result(type, "download", "failed: invalid file-list response");
         return 0;
     }
     count = json_array_size(files);
@@ -1735,6 +1822,7 @@ int download_flow(int type)
         remove_tree(temp);
         free(base);
         gui_message("The remote Game ID contains no files.");
+        log_transfer_result(type, "download", "failed: remote backup is empty");
         return 0;
     }
     progress_begin(0, "Files", count);
@@ -1746,6 +1834,7 @@ int download_flow(int type)
             free(base);
             progress_end(0);
             gui_message("The server returned an invalid file name.");
+            log_transfer_result(type, "download", "failed: invalid remote file name");
             return 0;
         }
         key = json_get_string(item);
@@ -1756,6 +1845,7 @@ int download_flow(int type)
             free(base);
             progress_end(0);
             gui_message("The server returned an unsafe file path.");
+            log_transfer_result(type, "download", "failed: unsafe remote file path");
             return 0;
         }
         if (strcmp(key, "citraholdDirectoryDummy") == 0) {
@@ -1764,11 +1854,30 @@ int download_flow(int type)
         else if (strstr(key, "citraholdDirectoryDummy") != NULL) {
             char* marker = strstr(key, "/citraholdDirectoryDummy");
             if (marker != NULL) *marker = '\0';
-            sprintf(path, "%s/%s", temp, key);
-            sd_mkdirs(path);
+            formatted = snprintf(path, PATHN, "%s/%s", temp, key);
+            if (formatted < 0 || formatted >= PATHN || sd_mkdirs(path) != 0) {
+                free(key);
+                json_delete(root);
+                remove_tree(temp);
+                free(base);
+                progress_end(0);
+                gui_message("Could not create a downloaded backup folder.");
+                script_log("Citrahold download failed: local folder creation failed.");
+                return 0;
+            }
         }
         else {
-            sprintf(path, "%s/%s", temp, key);
+            formatted = snprintf(path, PATHN, "%s/%s", temp, key);
+            if (formatted < 0 || formatted >= PATHN) {
+                free(key);
+                json_delete(root);
+                remove_tree(temp);
+                free(base);
+                progress_end(0);
+                gui_message("The server returned a file path that is too long.");
+                script_log("Citrahold download failed: local file path too long.");
+                return 0;
+            }
             {
                 char parent[PATHN];
                 parent_path(path, parent, PATHN);
@@ -1779,6 +1888,7 @@ int download_flow(int type)
                     free(base);
                     progress_end(0);
                     gui_message("Citrahold download failed.");
+                    log_transfer_result(type, "download", "failed while receiving a file");
                     return 0;
                 }
             }
@@ -1792,10 +1902,12 @@ int download_flow(int type)
         remove_tree(temp);
         free(base);
         gui_message("Download completed, but the backup could not be finalized.");
+        log_transfer_result(type, "download", "failed while finalizing the backup");
         return 0;
     }
     free(base);
     gui_message("Download completed and added to Checkpoint's backup list.");
+    log_transfer_result(type, "download", "completed");
     return 1;
 }
 
@@ -1858,7 +1970,7 @@ void configuration_menu(void)
         if (g_pass[0] == '\0') {
             gui_message("This state has no passphrase.");
         }
-        else if (gui_confirm("Remove the passphrase? The state remains encrypted to this console.")) {
+        else if (gui_confirm("Remove the passphrase? Same-console homebrew can then derive the vault key.")) {
             g_pass[0] = '\0';
             state_write();
         }
@@ -1902,6 +2014,7 @@ int main(int argc, char** argv)
         if (loaded < 0) return 1;
         if (loaded == 0) return 0;
     }
+    else if (loaded == -2) return 0;
     else if (loaded < 0) return 1;
     if (g_mode[0] == '\0') return 1;
     show_server_info();

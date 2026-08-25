@@ -223,8 +223,9 @@ took, especially HTTP response bodies and `sav_read` buffers.
 `json_delete` on a borrowed element ends the run with a diagnostic instead of
 corrupting the heap.
 
-File bytes handled by `zip_dir`, `unzip` and `web_upload_file` never enter the
-interpreter heap, so a multi-megabyte save is fine.
+File bytes handled by `zip_dir`, `unzip`, `web_upload_file` and
+`web_upload_file_once` never enter the interpreter heap, so a multi-megabyte save
+is fine.
 
 ### Cancellation
 
@@ -235,8 +236,9 @@ Holding **B** for about three quarters of a second raises the abort flag. Then:
 - a blocked `gui_*` call returns its "cancelled" answer immediately (`0` for
   `gui_confirm`, `-1` for `gui_pick_one`/`gui_numpad`, `""` for `gui_keyboard`) so
   the script can reach that next statement;
-- `zip_dir` and `unzip` stop and return `-2`; an upload in `web_upload_file` stops
-  too;
+- `zip_dir` and `unzip` stop and return `-2`; uploads in `web_upload_file` and
+  `web_upload_file_once` stop too, with the one-shot form removing its input
+  before the native call returns;
 - afterwards the heap is released and every open save archive is closed for you.
 
 Your script cannot poll or veto an abort. What it *can* do is keep the console in a
@@ -577,16 +579,18 @@ abort flag between chunks.
 | `int web_get(char** out, int* outSize, char* url)` | HTTP status, or negative (below) |
 | `int web_request(char* method, char* url, char* headers, char* body, int bodySize, char** out, int* outSize, char** respHeaders)` | HTTP status, or negative |
 | `int web_upload_file(char* method, char* url, char* headers, char* filePath, char** out, int* outSize, char** respHeaders)` | HTTP status, or negative (plus `-3`) |
+| `int web_upload_file_once(char* method, char* url, char* headers, char* filePath, char** out, int* outSize, char** respHeaders)` | one-shot upload; removes `filePath` before returning, or `-4` if cleanup fails |
 | `char* url_encode(char* s)` | percent-encoded copy |
 | `char* http_header_value(char* headers, char* key)` | that header's value, `""` if absent (case-sensitive key) |
 
-Negative returns, shared by all three transfer calls:
+Negative returns, shared by all four transfer calls:
 
 | | |
 | --- | --- |
 | `-1` | no HTTP stack available |
 | `-2` | the response did not fit in memory — the one worth retrying smaller |
-| `-3` | *(`web_upload_file` only)* `filePath` could not be opened or sized |
+| `-3` | *(`web_upload_file*` only)* `filePath` could not be opened or sized |
+| `-4` | *(`web_upload_file_once` only)* the one-shot input could not be removed |
 | `-(CURLcode + 100)` | transfer error |
 
 - `method` is usually `"GET"`, `"POST"`, `"PUT"`, `"PATCH"` or `"DELETE"`, but it
@@ -601,6 +605,10 @@ Negative returns, shared by all three transfer calls:
   `respHeaders` is the raw response header block, or you may pass `NULL` if you do
   not need it. Free what you took.
 - `web_upload_file` does not follow redirects (a redirect would re-send the body).
+- Use `web_upload_file_once` for a generated plaintext or otherwise sensitive
+  request file. It has the same transfer behavior, but owns `filePath` and removes
+  it inside the native call after success, failure or hold-B cancellation. Startup
+  stale-file cleanup is still useful for a power loss before that call begins.
 
 ### 7.7 JSON
 
@@ -691,10 +699,10 @@ the current item. `total <= 0` renders an indeterminate bar showing the raw coun
 Because `progress_begin` drops deeper layers, starting the next outer item can
 never leave a stale inner bar behind.
 
-Below your layers sits a row that `zip_dir`, `unzip` and `web_upload_file` drive
-themselves (bytes moved). `progress_note` is what that row says while no native
-call is running, and setting it also puts the row on screen, so the line is
-labelled from the first stage instead of appearing blank when a zip starts.
+Below your layers sits a row that `zip_dir`, `unzip` and the `web_upload_file*`
+calls drive themselves (bytes moved). `progress_note` is what that row says while
+no native call is running, and setting it also puts the row on screen, so the line
+is labelled from the first stage instead of appearing blank when a zip starts.
 
 ### 7.10 Logging and environment
 
