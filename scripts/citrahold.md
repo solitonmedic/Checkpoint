@@ -1,8 +1,16 @@
 # Citrahold sync
 
-`citrahold` synchronizes Checkpoint save backups and extdata backups with a
-Citrahold-compatible server. It runs on 3DS and stores its settings and token
-in an encrypted, console-bound Checkpoint vault.
+`citrahold` is a 3DS universal Checkpoint script for synchronizing save and
+extdata backups with the official Citrahold service or another compatible
+server. It keeps the account token, server selection, optional settings, Game
+ID mappings, and cached remote Game IDs in encrypted Checkpoint state.
+
+The script prints its embedded revision label before any other startup output.
+The current maintained source prints:
+
+```text
+Citrahold script revision: first-run-status
+```
 
 ## Install
 
@@ -12,69 +20,119 @@ Copy `citrahold.c` to:
 /3ds/Checkpoint/scripts/universal/citrahold.c
 ```
 
-Start Checkpoint, press SELECT, choose **citrahold**, then choose **Official**
-or **Custom** server mode. Enter the account token for the selected server when
-prompted. The script reuses the selected mode and token on later runs; use
-**Configuration** to change either one.
+Restart Checkpoint after replacing the file. From Checkpoint, press SELECT and
+choose **citrahold**.
 
-The script stores its encrypted settings, token, and Game ID mappings at:
+## First-run setup
+
+On the first run:
+
+1. Choose **Official Citrahold** or **Custom Citrahold server**.
+2. Enter either a full token or a shorthand token.
+3. If the entered value is shorter than 16 characters, the script exchanges it
+   through `/getToken` and uses the returned full token.
+4. The resulting full token is verified through `/getUserID`.
+5. Only after verification succeeds is the encrypted vault written.
+6. Optionally add a passphrase to the encrypted state.
+
+Official mode uses `https://api.citrahold.com`. Custom mode asks for a server
+URL and removes trailing slashes before making requests.
+
+Cancelling setup exits without committing a new configuration. Network,
+response-validation, authentication, or state-write failures are reported as
+failures rather than being treated as a successful setup.
+
+After setup, the selected mode and token are reused on later runs. Use
+**Configuration** to change them.
+
+### Reauthentication
+
+**Configuration → Authenticate active server** is for a full Citrahold token.
+It does not perform the shorthand-token exchange used during first-run setup.
+The candidate token is verified before it replaces the saved token. If
+verification or the subsequent vault write fails, the previous token remains
+the saved token.
+
+## Encrypted state and local files
+
+The main state file is:
 
 ```text
 /3ds/Checkpoint/config/citrahold.vault
 ```
 
-While an upload is running, its temporary request body is stored under
-`/3ds/Checkpoint/config/` and removed afterwards.
+The vault is encrypted and sealed to the console. A passphrase is optional;
+the state remains console-bound without one. The Configuration menu can set,
+change, or remove the passphrase.
 
-## Use
+During a state replacement, the script uses these sibling files temporarily:
 
-Create a Game ID mapping before uploading or downloading a save or extdata
-backup. The script has separate **Upload** and **Download** pages. On a
-download, it asks for a Checkpoint backup name and creates that final backup
-folder only after every file arrives successfully. If the transfer is cancelled
-or fails, its incomplete `*.citrahold-partial` folder is removed.
+```text
+/3ds/Checkpoint/config/citrahold.vault.tmp
+/3ds/Checkpoint/config/citrahold.vault.old
+```
 
-Use **Manage Game IDs** to add or edit mappings. The script queries and stores
-remote Game IDs so that known IDs can be identified later.
+It writes and closes the new vault before replacing the active one, and keeps
+the previous vault recoverable while the replacement is installed. Startup
+removes stale temporary files and restores the `.old` copy if the final vault
+is missing.
 
-Uploads are streamed from a temporary file. Downloads enumerate server files
-and receive them one file at a time with HTTP range requests, so large extdata
-backups can be transferred without loading an entire backup into script memory.
-Progress is shown for uploads and downloads. Hold B to cancel a transfer.
+While preparing an upload, the script creates:
 
-## Server compatibility
+```text
+/3ds/Checkpoint/config/citrahold-upload-payload.json
+```
 
-Official mode uses `https://api.citrahold.com`. Custom mode requires a
-Citrahold-compatible server. The reference contract is below so custom-server
-authors can support the script directly.
+This file contains the plaintext, Base64-encoded upload request. It is removed
+after normal payload preparation failures and after a normal upload request;
+startup also removes a stale copy left by an earlier run.
 
-### API contract
+Ordinary milestones are sent to Checkpoint's script log. **Debug logging**
+also writes non-secret diagnostic lines to:
 
-Requests use HTTP `POST`. Requests carrying fields use JSON with
-`Content-Type: application/json`; a token is supplied as the `token` property.
+```text
+/3ds/Checkpoint/logs/citrahold/citrahold.log
+```
 
-| Purpose | Route |
-| --- | --- |
-| Health check | `/areyouawake` |
-| Version and message of the day | `/softwareVersion` |
-| Exchange a shorthand token | `/getToken` |
-| Verify a token | `/getUserID` |
-| List remote save Game IDs | `/getSaves` |
-| List remote extdata Game IDs | `/getExtdata` |
-| Save/extdata update time | `/getSavesLastUpdated`, `/getExtdataLastUpdated` |
-| Upload saves/extdata | `/uploadMultiSaves`, `/uploadMultiExtdata` |
-| List or download save files | `/downloadSaves` |
-| List or download extdata files | `/downloadExtdata` |
+Credentials and save contents are not written to that log.
 
-`/getToken` exchanges a shorthand token for the full token, which the script
-then verifies with `/getUserID`. The listing routes return the Game IDs that
-belong to the authenticated account.
+## Game IDs and mappings
 
-### Multi-file uploads
+Create a mapping before uploading or downloading. Open **Manage Game IDs** to:
 
-An upload contains the token, a user-defined Game ID, and a `multi` array. Each
-file entry contains its remote relative path and Base64-encoded content. Empty
-directories are represented with a `citraholdDirectoryDummy` marker:
+- link a remote Game ID to a Checkpoint save or extdata title;
+- unlink an existing mapping; or
+- refresh the save and extdata Game ID lists from the server.
+
+The limits are separate concepts:
+
+- There are at most **16 local title mappings total**, shared by saves and
+  extdata.
+- The encrypted remote cache retains up to **32 save Game IDs** and **32
+  extdata Game IDs**, with separate capacities.
+- A Game ID can be entered manually, but it must be a single safe value: it
+  cannot contain `/`, `\`, `"`, a newline, a carriage return, `|`, or
+  `..`, and it must be shorter than 128 characters.
+
+The 32-per-type values are client cache limits, not a statement about how many
+Game IDs Citrahold permits on an account. If the server returns more than the
+client cache can retain, the script reports that some IDs were not saved. An
+unassigned cached ID must be linked to a compatible Checkpoint title before it
+can be used for a transfer.
+
+## Uploads
+
+Choose **Upload**, select **Upload save backup** or **Upload extdata backup**,
+then select a mapped title and one of its local Checkpoint backups.
+
+Before writing the payload, the script queries the remote Game ID list and the
+last-updated time when available. It shows the remote-copy status and asks for
+confirmation before continuing. If the pre-upload query is unavailable, the
+script identifies the remote state as unavailable and still asks whether to
+continue.
+
+The upload request is streamed from the temporary SD-card payload. Its JSON
+shape is:
 
 ```json
 {
@@ -82,36 +140,115 @@ directories are represented with a `citraholdDirectoryDummy` marker:
   "game": "user-defined-game-id",
   "multi": [
     ["user-defined-game-id/path/file.bin", "BASE64_DATA"],
-    ["user-defined-game-id/subdirectory/citraholdDirectoryDummy", "citraholdDirectoryDummy"]
+    [
+      "user-defined-game-id/subdirectory/citraholdDirectoryDummy",
+      "citraholdDirectoryDummy"
+    ]
   ]
 }
 ```
 
-A successful multi-upload replaces the existing remote directory for that Game
-ID. The script therefore checks the remote state and asks for confirmation
-before replacing a present backup.
+Files are Base64-encoded as they are written. Empty directories are represented
+by the `citraholdDirectoryDummy` marker. HTTP 200 and HTTP 201 are accepted as
+successful upload responses; other statuses are reported as a rejected upload.
 
-### File-list and ranged downloads
+**Delete after upload** is disabled by default. When enabled, a successful
+upload presents the exact local backup path and asks for confirmation before
+recursively removing it. The option can be toggled under **Configuration**.
 
-The initial request to `/downloadSaves` or `/downloadExtdata` includes `token`
-and `game`. A successful response lists relative paths:
+There is one cleanup limitation: Hold-B can terminate the script interpreter
+during Checkpoint's native streamed HTTP call, before the normal post-request
+`unlink()` can run. The startup cleanup is therefore a defense in depth, not a
+guarantee of immediate removal after an interpreter abort. Guaranteed abort-safe
+cleanup requires support from Checkpoint's native scripting API.
 
-```json
-{
-  "files": [
-    "path/file.bin",
-    "subdirectory/file.bin"
-  ]
-}
+## Downloads
+
+Choose **Download**, select a save or extdata mapping, and enter a new
+Checkpoint backup name. The script first confirms that the mapped Game ID is
+present on the server.
+
+Downloads use a temporary folder named:
+
+```text
+<backup-name>.citrahold-partial
 ```
 
-For each path, the script sends `token`, `game`, and `file` to the same route,
-with a `Range: bytes=<start>-<end>` header. The server must return the requested
-binary bytes with HTTP `206 Partial Content` and a `Content-Range` header. This
-allows the 3DS script to download large backups a file and range at a time.
+The server's file list is validated before any file is fetched. Each returned
+path must be a non-empty relative path without `\`, an absolute prefix, or
+`..`. The `files` list must be a non-empty JSON array of strings. The special
+`citraholdDirectoryDummy` marker recreates an empty directory.
 
-## Notes
+Each ordinary file is downloaded one file at a time in HTTP range chunks. A
+valid ranged response must be HTTP 206 with a `Content-Range` header whose
+start matches the requested offset, whose end matches the response body size,
+and whose total remains stable across chunks. A single HTTP 200 full-response
+is accepted only for the first request for a file. Misordered, duplicated,
+short, oversized, or otherwise inconsistent responses are rejected.
 
-Checkpoint may need to be restarted after a download before its current backup
-list displays the newly created folder. This does not affect the backup files
-on the SD card.
+The incomplete folder is renamed to its final Checkpoint backup name only
+after every file succeeds. On an ordinary failure, the incomplete folder is
+removed. If Hold-B aborts the interpreter before that cleanup runs, the stale
+partial folder is removed when the same backup name is retried.
+
+Use a simple single-component backup name without `/`, `\`, or `..`. The
+current script validates remote paths and Game IDs explicitly, but does not yet
+apply the same explicit component validation to this local backup-name input.
+
+## Server API contract
+
+Requests use HTTP `POST`. JSON requests use:
+
+```text
+Content-Type: application/json
+```
+
+Authenticated requests include the active full token in a `token` property.
+
+| Purpose | Route | Request/response details |
+| --- | --- | --- |
+| Health check | `/areyouawake` | Used by **Test active server**. |
+| Version and messages | `/softwareVersion` | Reads the `3ds` version list and `motd3ds` message list. |
+| Exchange shorthand token | `/getToken` | Sends `{"shorthandToken":"..."}`; expects a string `token`. |
+| Verify token | `/getUserID` | Sends `{"token":"..."}`; expects a string `userID`. |
+| List save Game IDs | `/getSaves` | Sends `{"token":"..."}`; expects a string array in `games`. |
+| List extdata Game IDs | `/getExtdata` | Sends `{"token":"..."}`; expects a string array in `games`. |
+| Save update time | `/getSavesLastUpdated` | Sends `token` and `game`; reads string `lastModified` when present. |
+| Extdata update time | `/getExtdataLastUpdated` | Sends `token` and `game`; reads string `lastModified` when present. |
+| Upload saves | `/uploadMultiSaves` | Receives the multi-file upload object described above. |
+| Upload extdata | `/uploadMultiExtdata` | Receives the multi-file upload object described above. |
+| List save files | `/downloadSaves` | Sends `token` and `game`; expects a string array in `files`. |
+| Download save file | `/downloadSaves` | Sends `token`, `game`, and `file`, plus a `Range` header. |
+| List extdata files | `/downloadExtdata` | Sends `token` and `game`; expects a string array in `files`. |
+| Download extdata file | `/downloadExtdata` | Sends `token`, `game`, and `file`, plus a `Range` header. |
+
+For file downloads, the server should return HTTP 206 and a complete
+`Content-Range: bytes start-end/total` header for each requested range. The
+script also accepts a complete HTTP 200 response for the first request for a
+file, as described above.
+
+## Current tested behavior
+
+The maintained revision has been exercised on a 3DS with the active server for
+server activation, Game ID refresh, save and extdata upload/download, invalid
+reauthentication, retained-token relaunch, first-run cancellation, invalid
+token handling, successful shorthand-token setup, and relaunch using the saved
+vault. Those tests completed without a script crash.
+
+The source checks used for the script are:
+
+```text
+./tools/scriptlint.sh scripts/3ds/universal/citrahold.c
+git diff --check
+```
+
+## Notes and limitations
+
+- Checkpoint may need to be restarted after a download before its current
+  backup list displays the new folder. The files are still written to the SD
+  card.
+- Removing `citrahold.vault` removes the saved Citrahold configuration,
+  credentials, passphrase state, mappings, and cached remote IDs from the
+  script's point of view. Back up the vault first if it may be needed.
+- The upload-payload abort-cleanup limitation and the local backup-name
+  validation limitation require changes beyond this documentation file.
