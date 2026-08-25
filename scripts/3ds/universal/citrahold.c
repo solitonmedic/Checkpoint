@@ -39,12 +39,13 @@
 #define IDN 128
 #define TITLEIDN 17
 #define MAXMAP 16
-#define MAXREMOTE 8
+#define MAXREMOTE 32
 #define MAXPICK 64
+#define STATE_TEXT_LIMIT 16384
 #define ROWN 256
 
 #define OFFICIAL_URL "https://api.citrahold.com"
-#define SCRIPT_VERSION "delete-path-confirmation"
+#define SCRIPT_VERSION "separate-remote-caches"
 
 char g_root[ROOTN];
 char g_config_dir[PATHN];
@@ -63,9 +64,10 @@ int g_map_type[MAXMAP];
 char g_map_title[MAXMAP][TITLEIDN];
 char g_map_game[MAXMAP][IDN];
 int g_map_count;
-int g_remote_type[MAXREMOTE];
-char g_remote_game[MAXREMOTE][IDN];
-int g_remote_count;
+char g_remote_save_game[MAXREMOTE][IDN];
+int g_remote_save_count;
+char g_remote_extdata_game[MAXREMOTE][IDN];
+int g_remote_extdata_count;
 
 char g_body[BODYN];
 char g_upload_payload[PATHN];
@@ -123,6 +125,8 @@ void init_paths(void)
     g_delete_after = 0;
     g_debug = 0;
     g_map_count = 0;
+    g_remote_save_count = 0;
+    g_remote_extdata_count = 0;
 }
 
 char* slurp_n(char* path, int* size)
@@ -260,8 +264,9 @@ void parse_remote_games(char* text)
     char* b;
     int n;
 
-    g_remote_count = 0;
-    while (p != NULL && g_remote_count < MAXREMOTE) {
+    g_remote_save_count = 0;
+    g_remote_extdata_count = 0;
+    while (p != NULL) {
         p = strstr(p, "remote=");
         if (p == NULL) break;
         n = 0;
@@ -273,11 +278,19 @@ void parse_remote_games(char* text)
         a = strtok(line, "|");
         b = strtok(NULL, "|");
         if (a != NULL && b != NULL) {
-            if (strcmp(a, "remote=save") == 0 || strcmp(a, "remote=extdata") == 0) {
-                g_remote_type[g_remote_count] = (strcmp(a, "remote=extdata") == 0) ? 1 : 0;
-                strncpy(g_remote_game[g_remote_count], b, IDN - 1);
-                g_remote_game[g_remote_count][IDN - 1] = '\0';
-                g_remote_count = g_remote_count + 1;
+            if (strcmp(a, "remote=save") == 0) {
+                if (g_remote_save_count < MAXREMOTE) {
+                    strncpy(g_remote_save_game[g_remote_save_count], b, IDN - 1);
+                    g_remote_save_game[g_remote_save_count][IDN - 1] = '\0';
+                    g_remote_save_count = g_remote_save_count + 1;
+                }
+            }
+            else if (strcmp(a, "remote=extdata") == 0) {
+                if (g_remote_extdata_count < MAXREMOTE) {
+                    strncpy(g_remote_extdata_game[g_remote_extdata_count], b, IDN - 1);
+                    g_remote_extdata_game[g_remote_extdata_count][IDN - 1] = '\0';
+                    g_remote_extdata_count = g_remote_extdata_count + 1;
+                }
             }
         }
         p = strchr(p, '\n');
@@ -294,7 +307,8 @@ void reset_state(void)
     g_delete_after = 0;
     g_debug = 0;
     g_map_count = 0;
-    g_remote_count = 0;
+    g_remote_save_count = 0;
+    g_remote_extdata_count = 0;
 }
 
 int state_from_plain(char* plain)
@@ -327,8 +341,12 @@ int state_to_plain(char* plain, int limit)
         sprintf(line, "map=%s|%s|%s\n", g_map_type[i] ? "extdata" : "save", g_map_title[i], g_map_game[i]);
         if (!append_text(plain, line, limit)) return 0;
     }
-    for (i = 0; i < g_remote_count; i++) {
-        sprintf(line, "remote=%s|%s\n", g_remote_type[i] ? "extdata" : "save", g_remote_game[i]);
+    for (i = 0; i < g_remote_save_count; i++) {
+        sprintf(line, "remote=save|%s\n", g_remote_save_game[i]);
+        if (!append_text(plain, line, limit)) return 0;
+    }
+    for (i = 0; i < g_remote_extdata_count; i++) {
+        sprintf(line, "remote=extdata|%s\n", g_remote_extdata_game[i]);
         if (!append_text(plain, line, limit)) return 0;
     }
     return 1;
@@ -348,18 +366,25 @@ void seal_error(int rc)
 
 int state_write(void)
 {
-    char plain[4096];
+    char* plain = NULL;
     char* blob = NULL;
     int blob_size = 0;
     int rc;
     int moved_old = 0;
     FILE* f;
 
-    if (!state_to_plain(plain, 4096)) {
+    plain = malloc(STATE_TEXT_LIMIT);
+    if (plain == NULL) {
+        gui_message("Not enough memory to prepare encrypted state.");
+        return 0;
+    }
+    if (!state_to_plain(plain, STATE_TEXT_LIMIT)) {
+        free(plain);
         gui_message("Citrahold settings are too large.");
         return 0;
     }
     rc = device_seal(plain, strlen(plain), g_pass, &blob, &blob_size);
+    free(plain);
     if (rc != 0) {
         seal_error(rc);
         return 0;
@@ -803,37 +828,45 @@ void cache_remote_games(int type, char* names, int count)
     int kept = 0;
     int i;
     int changed = 0;
-    int old_type[MAXREMOTE];
-    char old_game[MAXREMOTE][IDN];
-    int old_count = g_remote_count;
-
-    for (i = 0; i < old_count; i++) {
-        old_type[i] = g_remote_type[i];
-        strcpy(old_game[i], g_remote_game[i]);
-    }
-    g_remote_count = 0;
-    for (i = 0; i < old_count && g_remote_count < MAXREMOTE; i++) {
-        if (old_type[i] != type) {
-            g_remote_type[g_remote_count] = old_type[i];
-            strcpy(g_remote_game[g_remote_count], old_game[i]);
-            g_remote_count = g_remote_count + 1;
+    if (type == 0) {
+        int old_count = g_remote_save_count;
+        if (count > MAXREMOTE) gui_message("The save Game ID cache is full; some IDs were not saved.");
+        for (i = 0; i < count && kept < MAXREMOTE; i++) {
+            char* game = names + i * IDN;
+            if (game[0] != '\0' && valid_game_id(game)) {
+                if (kept >= old_count || strcmp(g_remote_save_game[kept], game) != 0) changed = 1;
+                kept = kept + 1;
+            }
+        }
+        if (old_count != kept) changed = 1;
+        g_remote_save_count = 0;
+        for (i = 0; i < count && g_remote_save_count < MAXREMOTE; i++) {
+            char* game = names + i * IDN;
+            if (game[0] != '\0' && valid_game_id(game)) {
+                strcpy(g_remote_save_game[g_remote_save_count], game);
+                g_remote_save_count = g_remote_save_count + 1;
+            }
         }
     }
-    if (count > MAXREMOTE - g_remote_count) {
-        gui_message("The remote Game ID cache is full; some IDs were not saved.");
-    }
-    for (i = 0; i < count && g_remote_count < MAXREMOTE; i++) {
-        char* game = names + i * IDN;
-        if (game[0] != '\0' && valid_game_id(game)) {
-            g_remote_type[g_remote_count] = type;
-            strcpy(g_remote_game[g_remote_count], game);
-            g_remote_count = g_remote_count + 1;
-            kept = kept + 1;
+    else {
+        int old_count = g_remote_extdata_count;
+        if (count > MAXREMOTE) gui_message("The extdata Game ID cache is full; some IDs were not saved.");
+        for (i = 0; i < count && kept < MAXREMOTE; i++) {
+            char* game = names + i * IDN;
+            if (game[0] != '\0' && valid_game_id(game)) {
+                if (kept >= old_count || strcmp(g_remote_extdata_game[kept], game) != 0) changed = 1;
+                kept = kept + 1;
+            }
         }
-    }
-    if (old_count != g_remote_count) changed = 1;
-    for (i = 0; !changed && i < g_remote_count; i++) {
-        if (i >= old_count || old_type[i] != g_remote_type[i] || strcmp(old_game[i], g_remote_game[i]) != 0) changed = 1;
+        if (old_count != kept) changed = 1;
+        g_remote_extdata_count = 0;
+        for (i = 0; i < count && g_remote_extdata_count < MAXREMOTE; i++) {
+            char* game = names + i * IDN;
+            if (game[0] != '\0' && valid_game_id(game)) {
+                strcpy(g_remote_extdata_game[g_remote_extdata_count], game);
+                g_remote_extdata_count = g_remote_extdata_count + 1;
+            }
+        }
     }
     if (changed) state_write();
     printf("Cached %d remote %s Game ID%s.\n", kept, type ? "extdata" : "save", kept == 1 ? "" : "s");
@@ -1237,11 +1270,21 @@ int choose_remote_game(int type, char* game)
     int count = 0;
     int i;
     int pick;
-    for (i = 0; i < g_remote_count; i++) if (g_remote_type[i] == type) {
-        rows[count] = malloc(IDN + 64);
-        assignment_row(type, g_remote_game[i], rows[count], IDN + 64);
-        indexes[count] = i;
-        count = count + 1;
+    if (type == 0) {
+        for (i = 0; i < g_remote_save_count; i++) {
+            rows[count] = malloc(IDN + 64);
+            assignment_row(type, g_remote_save_game[i], rows[count], IDN + 64);
+            indexes[count] = i;
+            count = count + 1;
+        }
+    }
+    else {
+        for (i = 0; i < g_remote_extdata_count; i++) {
+            rows[count] = malloc(IDN + 64);
+            assignment_row(type, g_remote_extdata_game[i], rows[count], IDN + 64);
+            indexes[count] = i;
+            count = count + 1;
+        }
     }
     rows[count] = "Enter a Game ID manually";
     pick = gui_pick_one(type ? "Select extdata Game ID" : "Select save Game ID", rows, count + 1);
@@ -1251,7 +1294,8 @@ int choose_remote_game(int type, char* game)
         gui_keyboard(game, "Enter Citrahold Game ID", IDN);
         return valid_game_id(game);
     }
-    strcpy(game, g_remote_game[indexes[pick]]);
+    if (type == 0) strcpy(game, g_remote_save_game[indexes[pick]]);
+    else strcpy(game, g_remote_extdata_game[indexes[pick]]);
     return 1;
 }
 
