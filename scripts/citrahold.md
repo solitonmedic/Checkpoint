@@ -6,11 +6,6 @@ server. It keeps the account token, server selection, optional settings, Game
 ID mappings, and cached remote Game IDs in encrypted Checkpoint state.
 
 The script prints its embedded revision label before any other startup output.
-The current maintained source prints:
-
-```text
-Citrahold script revision: first-run-status
-```
 
 ## Install
 
@@ -244,9 +239,6 @@ git diff --check
 
 ## Notes and limitations
 
-- Checkpoint may need to be restarted after a download before its current
-  backup list displays the new folder. The files are still written to the SD
-  card.
 - Removing `citrahold.vault` removes the saved Citrahold configuration,
   credentials, passphrase state, mappings, and cached remote IDs from the
   script's point of view. Back up the vault first if it may be needed.
