@@ -45,7 +45,7 @@
 #define ROWN 256
 
 #define OFFICIAL_URL "https://api.citrahold.com"
-#define SCRIPT_VERSION "null-safe-api-request"
+#define SCRIPT_VERSION "dead-code-cleanup"
 
 struct mapping {
     int type;
