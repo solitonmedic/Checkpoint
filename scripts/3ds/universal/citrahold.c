@@ -1637,6 +1637,7 @@ int download_flow(int type)
     int status;
     struct JSON* root;
     struct JSON* files;
+    struct JSON* item;
     int i;
     int count;
     char* key;
@@ -1706,9 +1707,16 @@ int download_flow(int type)
         return 0;
     }
     root = json_new();
+    if (root == NULL) {
+        free(out);
+        remove_tree(temp);
+        free(base);
+        gui_message("Could not allocate the download response.");
+        return 0;
+    }
     json_parse(root, out);
     free(out);
-    if (!json_object_contains(root, "files")) {
+    if (!json_is_valid(root) || !json_is_object(root) || !json_object_contains(root, "files")) {
         json_delete(root);
         remove_tree(temp);
         free(base);
@@ -1716,6 +1724,13 @@ int download_flow(int type)
         return 0;
     }
     files = json_object_element(root, "files");
+    if (files == NULL || !json_is_array(files)) {
+        json_delete(root);
+        remove_tree(temp);
+        free(base);
+        gui_message("The server returned an invalid file list.");
+        return 0;
+    }
     count = json_array_size(files);
     if (count <= 0) {
         json_delete(root);
@@ -1726,7 +1741,16 @@ int download_flow(int type)
     }
     progress_begin(0, "Files", count);
     for (i = 0; i < count; i++) {
-        key = json_get_string(json_array_element(files, i));
+        item = json_array_element(files, i);
+        if (item == NULL || !json_is_string(item)) {
+            json_delete(root);
+            remove_tree(temp);
+            free(base);
+            progress_end(0);
+            gui_message("The server returned an invalid file name.");
+            return 0;
+        }
+        key = json_get_string(item);
         if (!safe_remote_path(key) || strlen(key) >= PATHN - strlen(temp) - 2) {
             free(key);
             json_delete(root);
