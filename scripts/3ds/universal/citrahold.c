@@ -69,6 +69,7 @@ int g_remote_count;
 char g_body[BODYN];
 char g_upload_payload[PATHN];
 char g_vault_tmp[PATHN];
+char g_vault_old[PATHN];
 int g_upload_error;
 int g_upload_total;
 int g_upload_done;
@@ -104,10 +105,14 @@ void init_paths(void)
     sprintf(g_log_path, "%s/logs/citrahold/citrahold.log", root);
     sprintf(g_upload_payload, "%s/config/citrahold-upload-payload.json", root);
     sprintf(g_vault_tmp, "%s/config/citrahold.vault.tmp", root);
+    sprintf(g_vault_old, "%s/config/citrahold.vault.old", root);
     sd_mkdirs(g_log_dir);
     free(root);
     /* A power loss can leave the streamed request body behind. Never retain it. */
     unlink(g_upload_payload);
+    /* 3DS rename() does not replace an existing entry; recover an interrupted swap. */
+    if (!sd_exists(g_vault) && sd_exists(g_vault_old)) rename(g_vault_old, g_vault);
+    if (sd_exists(g_vault)) unlink(g_vault_old);
     unlink(g_vault_tmp);
     g_mode[0] = '\0';
     g_url[0] = '\0';
@@ -346,6 +351,7 @@ int state_write(void)
     char* blob = NULL;
     int blob_size = 0;
     int rc;
+    int moved_old = 0;
     FILE* f;
 
     if (!state_to_plain(plain, 4096)) {
@@ -372,12 +378,36 @@ int state_write(void)
         gui_message("The encrypted state was written short.");
         return 0;
     }
-    if (fclose(f) != 0 || rename(g_vault_tmp, g_vault) != 0) {
+    if (fclose(f) != 0) {
         unlink(g_vault_tmp);
         free(blob);
         gui_message("Could not commit the encrypted state.");
         return 0;
     }
+    /* Keep the last good vault recoverable while installing the closed file. */
+    if (sd_exists(g_vault_old) && unlink(g_vault_old) != 0) {
+        unlink(g_vault_tmp);
+        free(blob);
+        gui_message("Could not prepare the encrypted state.");
+        return 0;
+    }
+    if (sd_exists(g_vault)) {
+        if (rename(g_vault, g_vault_old) != 0) {
+            unlink(g_vault_tmp);
+            free(blob);
+            gui_message("Could not preserve the encrypted state.");
+            return 0;
+        }
+        moved_old = 1;
+    }
+    if (rename(g_vault_tmp, g_vault) != 0) {
+        if (moved_old) rename(g_vault_old, g_vault);
+        unlink(g_vault_tmp);
+        free(blob);
+        gui_message("Could not commit the encrypted state.");
+        return 0;
+    }
+    unlink(g_vault_old);
     free(blob);
     return 1;
 }
